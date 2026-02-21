@@ -17,6 +17,32 @@ mod thumbnail;
 const PREVIEW_MAX: u32 = 1920;
 const RAW_EXTS: &[&str] = &["raf", "dng", "nef", "cr2", "arw"];
 
+#[derive(Clone, Copy, Debug)]
+enum ProbeBackend {
+    Cpu,
+    Auto,
+    GpuSpike,
+}
+
+impl ProbeBackend {
+    fn from_arg(raw: Option<&str>) -> Self {
+        match raw.unwrap_or("auto").trim().to_ascii_lowercase().as_str() {
+            "cpu" => ProbeBackend::Cpu,
+            "auto" => ProbeBackend::Auto,
+            "gpu" | "gpu_spike" | "wgpu" | "spike" => ProbeBackend::GpuSpike,
+            _ => ProbeBackend::Auto,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ProbeBackend::Cpu => "cpu",
+            ProbeBackend::Auto => "auto",
+            ProbeBackend::GpuSpike => "gpu_spike",
+        }
+    }
+}
+
 fn has_extension(path: &Path, exts: &[&str]) -> bool {
     let Some(ext) = path.extension().map(|e| e.to_string_lossy()) else {
         return false;
@@ -54,7 +80,6 @@ fn median_ms(samples: &[f64]) -> f64 {
 
 fn build_state() -> state::EditState {
     let mut s = state::EditState::default();
-    s.straighten = 1.5;
     s.exposure = 0.35;
     s.contrast = 0.2;
     s.highlights = -0.2;
@@ -73,23 +98,55 @@ fn ensure_preview_size(img: image::DynamicImage) -> image::DynamicImage {
     }
 }
 
+fn apply_preview_backend(
+    preview: &image::DynamicImage,
+    state: &state::EditState,
+    backend: ProbeBackend,
+) -> image::DynamicImage {
+    match backend {
+        ProbeBackend::Cpu => processing::transform::apply(preview, state),
+        ProbeBackend::Auto | ProbeBackend::GpuSpike => {
+            processing::gpu_spike::try_apply(preview, state)
+                .unwrap_or_else(|| processing::transform::apply(preview, state))
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let mut args = std::env::args();
     let _bin = args.next();
     let dir = args
         .next()
         .map(PathBuf::from)
-        .context("usage: perf_probe <raw-dir> [count]")?;
+        .context("usage: perf_probe <raw-dir> [count] [auto|cpu|gpu_spike]")?;
     let count = args
         .next()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(20);
+    let backend = ProbeBackend::from_arg(args.next().as_deref());
+    let gpu_available = matches!(backend, ProbeBackend::Auto | ProbeBackend::GpuSpike)
+        && processing::gpu_spike::is_available();
 
     let files = list_raw_files(&dir, count)?;
     if files.is_empty() {
         anyhow::bail!("No RAW files found in {}", dir.display());
     }
-    eprintln!("Using {} RAW files from {}", files.len(), dir.display());
+    eprintln!(
+        "Using {} RAW files from {} (preview backend: {})",
+        files.len(),
+        dir.display(),
+        backend.label()
+    );
+    if matches!(backend, ProbeBackend::Auto | ProbeBackend::GpuSpike) {
+        eprintln!(
+            "gpu_spike availability: {}",
+            if gpu_available {
+                "available"
+            } else {
+                "unavailable (cpu fallback)"
+            }
+        );
+    }
 
     let mut first_preview_samples = Vec::with_capacity(files.len());
     for path in &files {
@@ -107,7 +164,7 @@ fn main() -> Result<()> {
             .with_context(|| format!("preview open failed for {}", path.display()))?;
         let preview = ensure_preview_size(img);
         let t0 = Instant::now();
-        let processed = processing::transform::apply(&preview, &state);
+        let processed = apply_preview_backend(&preview, &state, backend);
         let _raw = processed.to_rgba8().into_raw();
         slider_samples.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
@@ -143,6 +200,7 @@ fn main() -> Result<()> {
     let images_per_sec = files.len() as f64 / export_wall_s.max(1e-9);
 
     println!("METRIC file_count={}", files.len());
+    println!("METRIC preview_backend={}", backend.label());
     println!(
         "METRIC preview_ms_median={:.2}",
         median_ms(&first_preview_samples)

@@ -15,7 +15,12 @@ use image::codecs::webp::WebPEncoder;
 use image::imageops::FilterType;
 use rayon::prelude::*;
 
-use crate::{browser::Browser, config::AppConfig, state::EditState, viewer::Viewer};
+use crate::{
+    browser::Browser,
+    config::AppConfig,
+    state::EditState,
+    viewer::{PreviewBackend, Viewer},
+};
 
 struct ViewerWindow {
     viewer: Viewer,
@@ -114,6 +119,7 @@ impl RenderSpeedProfile {
 
 pub struct PhotographApp {
     browser: Browser,
+    preview_backend: PreviewBackend,
     viewers: Vec<ViewerWindow>,
     active_viewer: Option<usize>,
     next_id: usize,
@@ -139,11 +145,16 @@ pub struct PhotographApp {
 }
 
 impl PhotographApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>, config: AppConfig) -> Self {
+    pub fn new(
+        _cc: &eframe::CreationContext<'_>,
+        config: AppConfig,
+        preview_backend: PreviewBackend,
+    ) -> Self {
         let browser = Browser::new(config.browse_path.clone());
         let output_dir = default_render_dir();
         Self {
             browser,
+            preview_backend,
             viewers: Vec::new(),
             active_viewer: None,
             next_id: 0,
@@ -620,7 +631,7 @@ impl eframe::App for PhotographApp {
                 } else {
                     let id = self.next_id;
                     self.next_id += 1;
-                    let mut viewer = Viewer::new(id);
+                    let mut viewer = Viewer::new(id, self.preview_backend);
                     viewer.set_image(path.clone(), ctx);
                     let spawn_pos = next_viewer_spawn_pos(id, viewport_rect);
                     self.viewers.push(ViewerWindow {

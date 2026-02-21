@@ -10,9 +10,55 @@ mod viewer;
 
 use app::PhotographApp;
 use config::AppConfig;
+use viewer::PreviewBackend;
+
+fn parse_preview_backend(value: &str) -> PreviewBackend {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "cpu" => PreviewBackend::Cpu,
+        "auto" => PreviewBackend::Auto,
+        "gpu" | "gpu_spike" | "spike" | "wgpu" => PreviewBackend::GpuSpike,
+        _ => PreviewBackend::Auto,
+    }
+}
+
+fn resolve_preview_backend(config: &AppConfig) -> PreviewBackend {
+    if let Ok(raw) = std::env::var("PHOTOGRAPH_PREVIEW_BACKEND") {
+        return parse_preview_backend(&raw);
+    }
+    if let Some(raw) = config.preview_backend.as_deref() {
+        return parse_preview_backend(raw);
+    }
+    PreviewBackend::Auto
+}
+
+fn report_preview_backend(backend: PreviewBackend) {
+    match backend {
+        PreviewBackend::Cpu => {
+            eprintln!("photograph: preview backend = cpu (forced)");
+        }
+        PreviewBackend::Auto => {
+            if processing::gpu_spike::is_available() {
+                eprintln!("photograph: preview backend = auto (gpu_spike active when supported)");
+            } else {
+                eprintln!("photograph: preview backend = auto (gpu unavailable; cpu fallback)");
+            }
+        }
+        PreviewBackend::GpuSpike => {
+            if processing::gpu_spike::is_available() {
+                eprintln!("photograph: preview backend = gpu_spike");
+            } else {
+                eprintln!(
+                    "photograph: preview backend = gpu_spike requested, cpu fallback engaged"
+                );
+            }
+        }
+    }
+}
 
 fn main() -> eframe::Result {
     let config = AppConfig::load();
+    let preview_backend = resolve_preview_backend(&config);
+    report_preview_backend(preview_backend);
 
     let width = config.window_width.unwrap_or(1200.0);
     let height = config.window_height.unwrap_or(800.0);
@@ -27,6 +73,24 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "photograph",
         native_options,
-        Box::new(|cc| Ok(Box::new(PhotographApp::new(cc, config)))),
+        Box::new(|cc| Ok(Box::new(PhotographApp::new(cc, config, preview_backend)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_preview_backend;
+    use crate::viewer::PreviewBackend;
+
+    #[test]
+    fn parse_preview_backend_handles_supported_values() {
+        assert_eq!(parse_preview_backend("cpu"), PreviewBackend::Cpu);
+        assert_eq!(parse_preview_backend("auto"), PreviewBackend::Auto);
+        assert_eq!(parse_preview_backend("gpu"), PreviewBackend::GpuSpike);
+    }
+
+    #[test]
+    fn parse_preview_backend_defaults_to_auto_for_unknown_values() {
+        assert_eq!(parse_preview_backend("unknown"), PreviewBackend::Auto);
+    }
 }

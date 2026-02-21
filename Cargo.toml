@@ -16,6 +16,8 @@ imageproc = "0.25"
 rawler = "0.7.1"
 toml = "0.8"
 rayon = "1.10"
+wgpu = "24.0.5"
+pollster = "0.4"
 
 [profile.release]
 opt-level = 3
