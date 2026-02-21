@@ -64,22 +64,22 @@ fn is_gpu_state_supported(state: &EditState) -> bool {
         return false;
     }
 
-    // Keep selective color and graduated filter on CPU for parity.
+    // Keep selective color on CPU for parity.
     if state.selective_color.iter().any(|a| {
         a.hue.abs() > STATE_EPS || a.saturation.abs() > STATE_EPS || a.lightness.abs() > STATE_EPS
     }) {
         return false;
-    }
-    if let Some(grad) = &state.graduated_filter {
-        if grad.exposure.abs() > STATE_EPS {
-            return false;
-        }
     }
 
     true
 }
 
 fn has_gpu_adjustments(state: &EditState) -> bool {
+    let grad_active = state
+        .graduated_filter
+        .as_ref()
+        .map(|grad| grad.exposure.abs() > STATE_EPS && grad.bottom > grad.top + 0.0001)
+        .unwrap_or(false);
     state.exposure.abs() > STATE_EPS
         || state.contrast.abs() > STATE_EPS
         || state.highlights.abs() > STATE_EPS
@@ -87,6 +87,7 @@ fn has_gpu_adjustments(state: &EditState) -> bool {
         || state.temperature.abs() > STATE_EPS
         || state.saturation.abs() > STATE_EPS
         || state.hue_shift.abs() > STATE_EPS
+        || grad_active
 }
 
 fn apply_gpu(src: &RgbaImage, state: &EditState) -> Option<RgbaImage> {
@@ -135,7 +136,21 @@ fn apply_gpu(src: &RgbaImage, state: &EditState) -> Option<RgbaImage> {
         extent,
     );
 
-    let params: [f32; 12] = [
+    let (grad_enabled, grad_top, grad_bottom, grad_exposure) = state
+        .graduated_filter
+        .as_ref()
+        .and_then(|grad| {
+            let top = grad.top.clamp(0.0, 1.0);
+            let bottom = grad.bottom.clamp(0.0, 1.0);
+            if grad.exposure.abs() <= STATE_EPS || bottom <= top + 0.0001 {
+                None
+            } else {
+                Some((1.0_f32, top, bottom, grad.exposure.clamp(-5.0, 5.0)))
+            }
+        })
+        .unwrap_or((0.0, 0.0, 1.0, 0.0));
+
+    let params: [f32; 16] = [
         width as f32,
         height as f32,
         state.exposure,
@@ -145,6 +160,10 @@ fn apply_gpu(src: &RgbaImage, state: &EditState) -> Option<RgbaImage> {
         state.temperature,
         state.saturation,
         state.hue_shift,
+        grad_enabled,
+        grad_top,
+        grad_bottom,
+        grad_exposure,
         0.0,
         0.0,
         0.0,
@@ -364,6 +383,10 @@ struct Params {
     temperature: f32,
     saturation: f32,
     hue_shift: f32,
+    grad_enabled: f32,
+    grad_top: f32,
+    grad_bottom: f32,
+    grad_exposure: f32,
     _pad0: f32,
     _pad1: f32,
     _pad2: f32,
@@ -503,7 +526,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var hsl = rgb_to_hsl(vec3<f32>(r, g, b));
     hsl.x = wrap_unit(hsl.x + hue_shift);
     hsl.y = clamp(hsl.y * (1.0 + sat_adjust), 0.0, 1.0);
-    let out_rgb = hsl_to_rgb(hsl);
+    var out_rgb = hsl_to_rgb(hsl);
+
+    if (params.grad_enabled > 0.5) {
+        let h_denom = max(params.height - 1.0, 1.0);
+        let y_norm = f32(gid.y) / h_denom;
+        var weight = 0.0;
+        if (y_norm <= params.grad_top) {
+            weight = 1.0;
+        } else if (y_norm >= params.grad_bottom) {
+            weight = 0.0;
+        } else {
+            weight = (params.grad_bottom - y_norm) / (params.grad_bottom - params.grad_top);
+        }
+        if (weight > 0.0) {
+            let gain = exp2(params.grad_exposure * weight);
+            out_rgb = clamp(out_rgb * vec3<f32>(gain, gain, gain), vec3<f32>(0.0), vec3<f32>(1.0));
+        }
+    }
 
     textureStore(dst_tex, coord, vec4<f32>(out_rgb, px.a));
 }
@@ -529,17 +569,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_selective_and_graduated_states() {
+    fn rejects_selective_states() {
         let mut s = EditState::default();
         s.selective_color[0].saturation = 0.2;
-        assert!(!is_gpu_state_supported(&s));
-
-        s = EditState::default();
-        s.graduated_filter = Some(GradFilter {
-            top: 0.0,
-            bottom: 1.0,
-            exposure: 0.5,
-        });
         assert!(!is_gpu_state_supported(&s));
     }
 
@@ -548,5 +580,83 @@ mod tests {
         let img = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(2, 2, Rgba([10, 20, 30, 255])));
         let out = try_apply(&img, &EditState::default()).expect("default state should be handled");
         assert_eq!(out.to_rgba8().into_raw(), img.to_rgba8().into_raw());
+    }
+
+    #[test]
+    fn parity_matches_cpu_for_supported_color_adjustments() {
+        if !super::is_available() {
+            return;
+        }
+
+        let img = DynamicImage::ImageRgba8(ImageBuffer::from_fn(32, 24, |x, y| {
+            Rgba([
+                ((x * 7 + y * 3) % 256) as u8,
+                ((x * 11 + y * 5) % 256) as u8,
+                ((x * 13 + y * 17) % 256) as u8,
+                255,
+            ])
+        }));
+        let mut state = EditState::default();
+        state.exposure = 0.35;
+        state.contrast = 0.2;
+        state.highlights = -0.2;
+        state.shadows = 0.2;
+        state.temperature = 0.1;
+        state.saturation = 0.15;
+        state.hue_shift = 8.0;
+
+        let cpu = crate::processing::transform::apply(&img, &state).to_rgba8();
+        let gpu = try_apply(&img, &state)
+            .expect("gpu apply should succeed for supported state")
+            .to_rgba8();
+        assert_rgba_close(&cpu, &gpu, 2);
+    }
+
+    #[test]
+    fn parity_matches_cpu_for_supported_graduated_filter() {
+        if !super::is_available() {
+            return;
+        }
+
+        let img = DynamicImage::ImageRgba8(ImageBuffer::from_fn(24, 24, |x, y| {
+            Rgba([
+                ((x * 9 + y * 2) % 256) as u8,
+                ((x * 3 + y * 11) % 256) as u8,
+                ((x * 5 + y * 7) % 256) as u8,
+                255,
+            ])
+        }));
+        let mut state = EditState::default();
+        state.exposure = 0.25;
+        state.saturation = 0.12;
+        state.graduated_filter = Some(GradFilter {
+            top: 0.1,
+            bottom: 0.9,
+            exposure: -0.8,
+        });
+
+        let cpu = crate::processing::transform::apply(&img, &state).to_rgba8();
+        let gpu = try_apply(&img, &state)
+            .expect("gpu apply should succeed for supported graduated filter")
+            .to_rgba8();
+        assert_rgba_close(&cpu, &gpu, 2);
+    }
+
+    fn assert_rgba_close(cpu: &image::RgbaImage, gpu: &image::RgbaImage, tolerance: u8) {
+        assert_eq!(cpu.dimensions(), gpu.dimensions());
+        for (c, g) in cpu.pixels().zip(gpu.pixels()) {
+            for i in 0..4 {
+                let d = c[i].abs_diff(g[i]);
+                assert!(
+                    d <= tolerance,
+                    "channel {} differed by {} (cpu={}, gpu={}, tol={})",
+                    i,
+                    d,
+                    c[i],
+                    g[i],
+                    tolerance
+                );
+            }
+        }
     }
 }
