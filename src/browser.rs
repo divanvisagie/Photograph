@@ -265,7 +265,7 @@ fn generate_thumb(path: &PathBuf, cache_dir: &PathBuf) -> Option<(Vec<u8>, usize
     let img = if thumb_path.exists() {
         image::open(&thumb_path).ok()?
     } else {
-        let full = image::open(path).ok()?;
+        let full = crate::thumbnail::open_image(path).ok()?;
         let t = full.thumbnail(
             crate::thumbnail::THUMB_SIZE,
             crate::thumbnail::THUMB_SIZE,

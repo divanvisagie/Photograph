@@ -70,7 +70,7 @@ impl Viewer {
         let tx = self.tx.clone();
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
-            match image::open(&path) {
+            match crate::thumbnail::open_image(&path) {
                 Ok(img) => {
                     let preview = if img.width() > PREVIEW_MAX || img.height() > PREVIEW_MAX {
                         img.thumbnail(PREVIEW_MAX, PREVIEW_MAX)

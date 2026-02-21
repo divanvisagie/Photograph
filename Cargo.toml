@@ -13,6 +13,7 @@ image = "0.25"
 anyhow = "1"
 dirs = "6"
 imageproc = "0.25"
+rawler = "0.7.1"
 
 [profile.release]
 opt-level = 3
