@@ -4,7 +4,7 @@ use imageproc::geometric_transformations::{rotate_about_center, warp, Interpolat
 use crate::state::{EditState, Keystone};
 
 /// Apply all geometry transforms from `state` to `img`.
-/// Order: straighten → orthogonal rotate → flip.
+/// Order: straighten → keystone → orthogonal rotate → flip → crop.
 pub fn apply(img: &DynamicImage, state: &EditState) -> DynamicImage {
     let mut out = img.clone();
 
@@ -39,6 +39,19 @@ pub fn apply(img: &DynamicImage, state: &EditState) -> DynamicImage {
     }
     if state.flip_v {
         out = out.flipv();
+    }
+
+    // Crop (applied last, in normalized 0.0–1.0 coordinates)
+    if let Some(ref crop) = state.crop {
+        let w = out.width() as f32;
+        let h = out.height() as f32;
+        let cx = (crop.x * w) as u32;
+        let cy = (crop.y * h) as u32;
+        let cw = (crop.width * w).min(w - cx as f32) as u32;
+        let ch = (crop.height * h).min(h - cy as f32) as u32;
+        if cw > 0 && ch > 0 {
+            out = out.crop_imm(cx, cy, cw, ch);
+        }
     }
 
     out
