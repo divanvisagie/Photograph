@@ -127,7 +127,6 @@ pub struct PhotographApp {
     active_viewer: Option<usize>,
     next_id: usize,
     prev_selected: Option<PathBuf>,
-    show_browser: bool,
     show_render_window: bool,
     render_output_path: String,
     render_format: RenderFormat,
@@ -167,7 +166,6 @@ impl PhotographApp {
             active_viewer: None,
             next_id: 0,
             prev_selected: None,
-            show_browser: true,
             show_render_window: false,
             render_output_path: output_dir.display().to_string(),
             render_format: RenderFormat::Jpg,
@@ -840,14 +838,30 @@ impl eframe::App for PhotographApp {
             self.show_render_window = show_render_window;
         }
 
-        // Images window — path bar + thumbnail grid
-        egui::Window::new("Images")
-            .open(&mut self.show_browser)
-            .default_size([600.0, 700.0])
-            .default_pos([10.0, 50.0])
-            .show(ctx, |ui| {
+        // Browser window — path bar + thumbnail grid (left side, no close button)
+        {
+            let mut window = egui::Window::new("Browser")
+                .id(egui::Id::new("browser_window"))
+                .resizable(true)
+                .collapsible(true);
+
+            if let Some(rect) = viewport_rect {
+                const BROWSER_WIDTH: f32 = 640.0;
+                let y = content_rect.top();
+                let height = ((content_rect.height() - 50.0) / 2.0).max(1.0);
+                window = window
+                    .default_pos(egui::pos2(rect.left(), y))
+                    .default_size(egui::vec2(BROWSER_WIDTH, height));
+            } else {
+                window = window
+                    .default_pos([10.0, 64.0])
+                    .default_size([640.0, 350.0]);
+            }
+
+            window.show(ctx, |ui| {
                 self.browser.show_contents(ui, ctx);
             });
+        }
 
         // Render each viewer window
         let mut newly_active: Option<usize> = None;
