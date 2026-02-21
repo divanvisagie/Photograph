@@ -12,6 +12,21 @@ use app::PhotographApp;
 use config::AppConfig;
 use viewer::PreviewBackend;
 
+const WINDOW_ICON_PNG: &[u8] = include_bytes!("../assets/photograph-icon-128.png");
+
+fn build_window_icon() -> egui::IconData {
+    let icon = image::load_from_memory_with_format(WINDOW_ICON_PNG, image::ImageFormat::Png)
+        .expect("embedded window icon should decode as PNG")
+        .into_rgba8();
+    let (width, height) = icon.dimensions();
+
+    egui::IconData {
+        rgba: icon.into_raw(),
+        width,
+        height,
+    }
+}
+
 fn parse_preview_backend(value: &str) -> PreviewBackend {
     match value.trim().to_ascii_lowercase().as_str() {
         "cpu" => PreviewBackend::Cpu,
@@ -78,6 +93,7 @@ fn main() -> eframe::Result {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Photograph")
+            .with_icon(build_window_icon())
             .with_inner_size([width, height]),
         ..Default::default()
     };
@@ -104,5 +120,13 @@ mod tests {
     #[test]
     fn parse_preview_backend_defaults_to_auto_for_unknown_values() {
         assert_eq!(parse_preview_backend("unknown"), PreviewBackend::Auto);
+    }
+
+    #[test]
+    fn app_icon_buffer_matches_declared_dimensions() {
+        let icon = super::build_window_icon();
+        assert_eq!(icon.width, 128);
+        assert_eq!(icon.height, 128);
+        assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
     }
 }

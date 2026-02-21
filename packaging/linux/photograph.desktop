@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Photograph
+GenericName=Photo Editor
+Comment=Native photo editor with non-destructive workflows
+Exec=photograph
+Icon=photograph
+Terminal=false
+Categories=Graphics;Photography;
+StartupNotify=true

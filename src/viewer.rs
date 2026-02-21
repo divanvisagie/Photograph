@@ -501,8 +501,7 @@ impl Viewer {
             let elapsed = zoom_changed_at.elapsed();
             if elapsed >= DEBOUNCE {
                 // Compute needed resolution based on zoom level
-                let needed_max =
-                    ((PREVIEW_MAX as f32 * self.zoom).ceil() as u32).max(PREVIEW_MAX);
+                let needed_max = ((PREVIEW_MAX as f32 * self.zoom).ceil() as u32).max(PREVIEW_MAX);
                 // Cap at original image dimensions
                 let orig_max = self
                     .metadata
@@ -659,14 +658,7 @@ impl Viewer {
                 let half_w = (avail_w - ui.spacing().item_spacing.x) / 2.0;
                 ui.horizontal(|ui| {
                     if let Some(ref orig) = original_texture {
-                        draw_fitted_image(
-                            ui,
-                            orig,
-                            half_w,
-                            img_max_h,
-                            1.0,
-                            egui::Vec2::ZERO,
-                        );
+                        draw_fitted_image(ui, orig, half_w, img_max_h, 1.0, egui::Vec2::ZERO);
                     } else {
                         ui.allocate_ui(egui::vec2(half_w, img_max_h), |ui| {
                             ui.centered_and_justified(|ui| {
@@ -674,37 +666,18 @@ impl Viewer {
                             });
                         });
                     }
-                    draw_fitted_image(
-                        ui,
-                        tex,
-                        half_w,
-                        img_max_h,
-                        1.0,
-                        egui::Vec2::ZERO,
-                    );
+                    draw_fitted_image(ui, tex, half_w, img_max_h, 1.0, egui::Vec2::ZERO);
                 });
             } else {
                 if self.crop_mode {
                     // Disable zoom/pan while in crop mode
-                    let img_rect = draw_fitted_image(
-                        ui,
-                        tex,
-                        avail_w,
-                        img_max_h,
-                        1.0,
-                        egui::Vec2::ZERO,
-                    );
+                    let img_rect =
+                        draw_fitted_image(ui, tex, avail_w, img_max_h, 1.0, egui::Vec2::ZERO);
                     self.handle_crop_interaction(ui, img_rect);
                 } else {
                     let zoom_before = self.zoom;
-                    let img_rect = draw_fitted_image(
-                        ui,
-                        tex,
-                        avail_w,
-                        img_max_h,
-                        self.zoom,
-                        self.pan_offset,
-                    );
+                    let img_rect =
+                        draw_fitted_image(ui, tex, avail_w, img_max_h, self.zoom, self.pan_offset);
 
                     // Compute fit_size for clamping
                     let tex_size = tex.size_vec2();
@@ -742,9 +715,8 @@ impl Viewer {
                             // Zoom toward cursor
                             if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
                                 let img_center = viewport_rect.center();
-                                let rel = cursor_pos.to_vec2()
-                                    - img_center.to_vec2()
-                                    - self.pan_offset;
+                                let rel =
+                                    cursor_pos.to_vec2() - img_center.to_vec2() - self.pan_offset;
                                 self.pan_offset += rel * (1.0 - new_zoom / old_zoom);
                             }
                             self.zoom = new_zoom;
@@ -815,14 +787,20 @@ impl Viewer {
                         .selected_text(&zoom_label)
                         .width(60.0)
                         .show_ui(ui, |ui| {
-                            if ui.selectable_label((self.zoom - 1.0).abs() < 0.01, "Fit").clicked() {
+                            if ui
+                                .selectable_label((self.zoom - 1.0).abs() < 0.01, "Fit")
+                                .clicked()
+                            {
                                 self.zoom = 1.0;
                                 self.pan_offset = egui::Vec2::ZERO;
                             }
                             for &pct in &[200, 300, 500, 1000] {
                                 let z = pct as f32 / 100.0;
                                 let label = format!("{}%", pct);
-                                if ui.selectable_label((self.zoom - z).abs() < 0.01, label).clicked() {
+                                if ui
+                                    .selectable_label((self.zoom - z).abs() < 0.01, label)
+                                    .clicked()
+                                {
                                     self.pan_offset = egui::Vec2::ZERO;
                                     self.zoom = z;
                                 }
