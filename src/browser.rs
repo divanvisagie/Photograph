@@ -28,13 +28,18 @@ pub struct Browser {
     tx: mpsc::SyncSender<ThumbResult>,
     rx: mpsc::Receiver<ThumbResult>,
     pub selected: Option<PathBuf>,
+    path_edit: String,
 }
 
 impl Browser {
-    pub fn new() -> Self {
+    pub fn new(initial_dir: Option<PathBuf>) -> Self {
+        let dir = initial_dir
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         let (tx, rx) = mpsc::sync_channel(64);
         let mut b = Self {
-            current_dir: dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
+            path_edit: dir.display().to_string(),
+            current_dir: dir,
             subdirs: Vec::new(),
             images: Vec::new(),
             pending_nav: None,
@@ -69,6 +74,10 @@ impl Browser {
 
         self.subdirs.sort_by(|a, b| a.1.cmp(&b.1));
         self.images.sort_by(|a, b| a.1.cmp(&b.1));
+    }
+
+    fn navigate(&mut self, dir: PathBuf) {
+        self.pending_nav = Some(dir);
     }
 
     fn queue_pending_thumbs(&mut self, ctx: &egui::Context) {
@@ -110,57 +119,73 @@ impl Browser {
         }
     }
 
-    pub fn show_nav(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("browser_nav").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if ui
-                    .button("⬆")
-                    .on_hover_text("Parent directory")
-                    .clicked()
-                {
-                    if let Some(p) = self.current_dir.parent() {
-                        self.pending_nav = Some(p.to_path_buf());
-                    }
-                }
-                ui.monospace(self.current_dir.display().to_string());
-            });
-        });
-    }
-
-    pub fn show_grid(&mut self, ctx: &egui::Context) {
+    /// Drain thumbnail results and queue pending thumbnails.
+    /// Call every frame before rendering windows.
+    pub fn poll(&mut self, ctx: &egui::Context) {
         if let Some(nav) = self.pending_nav.take() {
             self.current_dir = nav;
+            self.path_edit = self.current_dir.display().to_string();
             self.selected = None;
             self.scan();
         }
 
         self.drain_channel(ctx);
         self.queue_pending_thumbs(ctx);
+    }
+
+    /// Render path bar + grid contents into the provided `ui`.
+    pub fn show_contents(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
+        // Editable path bar
+        ui.horizontal(|ui| {
+            if ui
+                .button("\u{2B06}")
+                .on_hover_text("Parent directory")
+                .clicked()
+            {
+                if let Some(p) = self.current_dir.parent() {
+                    self.navigate(p.to_path_buf());
+                }
+            }
+
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut self.path_edit)
+                    .desired_width(ui.available_width())
+                    .font(egui::TextStyle::Monospace),
+            );
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                let candidate = PathBuf::from(&self.path_edit);
+                if candidate.is_dir() {
+                    self.navigate(candidate);
+                } else {
+                    // Revert to current dir if invalid
+                    self.path_edit = self.current_dir.display().to_string();
+                }
+            }
+        });
+
+        ui.separator();
 
         let mut new_sel: Option<PathBuf> = None;
         let mut nav_to: Option<PathBuf> = None;
         let current_sel = self.selected.clone();
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // Subdirectory buttons
-            if !self.subdirs.is_empty() {
-                ui.horizontal_wrapped(|ui| {
-                    for (path, name) in &self.subdirs {
-                        if ui.button(format!("📁 {}", name)).clicked() {
-                            nav_to = Some(path.clone());
-                        }
+        // Subdirectory buttons
+        if !self.subdirs.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                for (path, name) in &self.subdirs {
+                    if ui.button(format!("\u{1F4C1} {}", name)).clicked() {
+                        nav_to = Some(path.clone());
                     }
-                });
-                ui.separator();
-            }
+                }
+            });
+            ui.separator();
+        }
 
-            if self.images.is_empty() {
-                ui.centered_and_justified(|ui| {
-                    ui.label("No images in this directory");
-                });
-                return;
-            }
-
+        if self.images.is_empty() {
+            ui.centered_and_justified(|ui| {
+                ui.label("No images in this directory");
+            });
+        } else {
             let avail_w = ui.available_width();
             let cols = ((avail_w / (CELL + 8.0)) as usize).max(1);
 
@@ -190,10 +215,10 @@ impl Browser {
                             }
                         });
                 });
-        });
+        }
 
         if let Some(nav) = nav_to {
-            self.pending_nav = Some(nav);
+            self.navigate(nav);
         }
         if let Some(sel) = new_sel {
             self.selected = Some(sel);
@@ -238,7 +263,7 @@ fn draw_thumb_cell(
             painter.text(
                 img_rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "…",
+                "\u{2026}",
                 egui::FontId::proportional(22.0),
                 egui::Color32::GRAY,
             );

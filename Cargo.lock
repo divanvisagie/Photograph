@@ -1948,6 +1948,7 @@ dependencies = [
  "rawler",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
