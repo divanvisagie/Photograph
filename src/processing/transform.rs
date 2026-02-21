@@ -1,7 +1,7 @@
 use image::{DynamicImage, Rgba};
-use imageproc::geometric_transformations::{rotate_about_center, Interpolation};
+use imageproc::geometric_transformations::{rotate_about_center, warp, Interpolation, Projection};
 
-use crate::state::EditState;
+use crate::state::{EditState, Keystone};
 
 /// Apply all geometry transforms from `state` to `img`.
 /// Order: straighten → orthogonal rotate → flip.
@@ -18,6 +18,11 @@ pub fn apply(img: &DynamicImage, state: &EditState) -> DynamicImage {
             Rgba([0u8, 0u8, 0u8, 255u8]),
         );
         out = DynamicImage::ImageRgba8(rotated);
+    }
+
+    // Keystone (perspective) correction
+    if state.keystone.vertical.abs() > 0.001 || state.keystone.horizontal.abs() > 0.001 {
+        out = apply_keystone(out, &state.keystone);
     }
 
     // Orthogonal rotate
@@ -37,4 +42,40 @@ pub fn apply(img: &DynamicImage, state: &EditState) -> DynamicImage {
     }
 
     out
+}
+
+/// Apply keystone (perspective) correction.
+///
+/// `vertical` shifts top corners inward (positive) or bottom corners inward (negative).
+/// `horizontal` shifts left corners inward (positive) or right corners inward (negative).
+/// Both values are in the range ±0.5, scaled by the image dimensions.
+fn apply_keystone(img: DynamicImage, keystone: &Keystone) -> DynamicImage {
+    let rgba = img.to_rgba8();
+    let w = rgba.width() as f32;
+    let h = rgba.height() as f32;
+
+    let v = keystone.vertical;
+    let hz = keystone.horizontal;
+
+    // Source corners: top-left, top-right, bottom-right, bottom-left
+    let src: [(f32, f32); 4] = [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)];
+
+    // Destination corners with perspective shifts applied
+    let dst: [(f32, f32); 4] = [
+        // top-left: shift right for +v, shift down for +h
+        (v.max(0.0) * w, hz.max(0.0) * h),
+        // top-right: shift left for +v, shift down for -h
+        (w - v.max(0.0) * w, (-hz).max(0.0) * h),
+        // bottom-right: shift left for -v, shift up for -h
+        (w - (-v).max(0.0) * w, h - (-hz).max(0.0) * h),
+        // bottom-left: shift right for -v, shift up for +h
+        ((-v).max(0.0) * w, h - hz.max(0.0) * h),
+    ];
+
+    let Some(projection) = Projection::from_control_points(src, dst) else {
+        return img;
+    };
+
+    let warped = warp(&rgba, &projection, Interpolation::Bilinear, Rgba([0, 0, 0, 255]));
+    DynamicImage::ImageRgba8(warped)
 }

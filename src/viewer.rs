@@ -311,8 +311,51 @@ fn show_transform_section(
         }
     });
 
+    // Keystone — Vertical
+    ui.horizontal(|ui| {
+        ui.label("Vertical");
+        let resp = ui.add(
+            egui::Slider::new(&mut state.keystone.vertical, -0.5_f32..=0.5_f32)
+                .fixed_decimals(2)
+                .clamping(egui::SliderClamping::Always),
+        );
+        if resp.changed() {
+            *needs_process = true;
+            *last_slider_change = Some(Instant::now());
+        }
+        if state.keystone.vertical != 0.0 && ui.small_button("↺").clicked() {
+            state.keystone.vertical = 0.0;
+            *needs_process = true;
+            *last_slider_change = None;
+        }
+    });
+
+    // Keystone — Horizontal
+    ui.horizontal(|ui| {
+        ui.label("Horizontal");
+        let resp = ui.add(
+            egui::Slider::new(&mut state.keystone.horizontal, -0.5_f32..=0.5_f32)
+                .fixed_decimals(2)
+                .clamping(egui::SliderClamping::Always),
+        );
+        if resp.changed() {
+            *needs_process = true;
+            *last_slider_change = Some(Instant::now());
+        }
+        if state.keystone.horizontal != 0.0 && ui.small_button("↺").clicked() {
+            state.keystone.horizontal = 0.0;
+            *needs_process = true;
+            *last_slider_change = None;
+        }
+    });
+
     // Reset all
-    let dirty = state.rotate != 0 || state.flip_h || state.flip_v || state.straighten != 0.0;
+    let dirty = state.rotate != 0
+        || state.flip_h
+        || state.flip_v
+        || state.straighten != 0.0
+        || state.keystone.vertical != 0.0
+        || state.keystone.horizontal != 0.0;
     if dirty {
         ui.add_space(4.0);
         if ui.small_button("Reset transforms").clicked() {
@@ -320,6 +363,8 @@ fn show_transform_section(
             state.flip_h = false;
             state.flip_v = false;
             state.straighten = 0.0;
+            state.keystone.vertical = 0.0;
+            state.keystone.horizontal = 0.0;
             *needs_process = true;
             *last_slider_change = None;
         }
