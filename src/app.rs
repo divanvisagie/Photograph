@@ -8,6 +8,7 @@ use crate::{browser::Browser, config::AppConfig, state::EditState, viewer::Viewe
 struct ViewerWindow {
     viewer: Viewer,
     open: bool,
+    spawn_pos: egui::Pos2,
 }
 
 #[derive(Clone)]
@@ -256,6 +257,23 @@ impl PhotographApp {
     }
 }
 
+fn next_viewer_spawn_pos(index: usize, viewport_rect: Option<egui::Rect>) -> egui::Pos2 {
+    const BASE_X: f32 = 620.0;
+    const BASE_Y: f32 = 64.0;
+    const STEP: f32 = 40.0;
+
+    let raw_x = BASE_X + STEP * index as f32;
+    let raw_y = BASE_Y + STEP * index as f32;
+
+    if let Some(rect) = viewport_rect {
+        let max_x = (rect.right() - 220.0).max(rect.left() + 8.0);
+        let max_y = (rect.bottom() - 160.0).max(rect.top() + 8.0);
+        egui::pos2(raw_x.min(max_x), raw_y.min(max_y))
+    } else {
+        egui::pos2(raw_x, raw_y)
+    }
+}
+
 fn default_render_dir() -> PathBuf {
     dirs::picture_dir()
         .or_else(dirs::home_dir)
@@ -341,7 +359,12 @@ impl eframe::App for PhotographApp {
                     self.next_id += 1;
                     let mut viewer = Viewer::new(id);
                     viewer.set_image(path.clone(), ctx);
-                    self.viewers.push(ViewerWindow { viewer, open: true });
+                    let spawn_pos = next_viewer_spawn_pos(id, viewport_rect);
+                    self.viewers.push(ViewerWindow {
+                        viewer,
+                        open: true,
+                        spawn_pos,
+                    });
                     self.active_viewer = Some(id);
                 }
             }
@@ -365,6 +388,7 @@ impl eframe::App for PhotographApp {
                 }
             });
         });
+        let content_rect = ctx.available_rect();
 
         // Empty central panel as background (required by egui)
         egui::CentralPanel::default().show(ctx, |_ui| {});
@@ -467,7 +491,7 @@ impl eframe::App for PhotographApp {
                 .id(egui::Id::new(&window_id))
                 .open(&mut vw.open)
                 .default_size([800.0, 600.0])
-                .default_pos([620.0, 50.0])
+                .default_pos(vw.spawn_pos)
                 .show(ctx, |ui| {
                     vw.viewer.show_image(ui);
                 });
@@ -497,22 +521,21 @@ impl eframe::App for PhotographApp {
                 let mut window = egui::Window::new(&label)
                     .id(egui::Id::new("tools_window"))
                     .order(egui::Order::Foreground)
-                    .movable(false)
-                    .resizable(false);
+                    .resizable(false)
+                    .movable(false);
 
                 if let Some(rect) = viewport_rect {
                     const TOOLS_WIDTH: f32 = 320.0;
-                    const MARGIN: f32 = 8.0;
-                    let height = (rect.height() - (MARGIN * 2.0)).max(120.0);
-                    let x = (rect.right() - TOOLS_WIDTH - MARGIN).max(rect.left() + MARGIN);
-                    let y = rect.top() + MARGIN;
+                    let x = rect.right() - TOOLS_WIDTH;
+                    let y = content_rect.top();
+                    let height = (content_rect.height() - 50.0).max(1.0);
                     window = window
                         .fixed_pos(egui::pos2(x, y))
                         .fixed_size(egui::vec2(TOOLS_WIDTH, height));
                 } else {
                     window = window
-                        .default_size([320.0, 400.0])
-                        .default_pos([620.0, 50.0]);
+                        .fixed_pos([620.0, 64.0])
+                        .fixed_size([320.0, 700.0]);
                 }
 
                 window.show(ctx, |ui| {
