@@ -7,18 +7,17 @@ struct ViewerWindow {
     open: bool,
 }
 
-pub struct ImageManagerApp {
+pub struct PhotographApp {
     browser: Browser,
     viewers: Vec<ViewerWindow>,
     active_viewer: Option<usize>,
     next_id: usize,
     prev_selected: Option<PathBuf>,
     show_browser: bool,
-    show_tools_window: bool,
     config: AppConfig,
 }
 
-impl ImageManagerApp {
+impl PhotographApp {
     pub fn new(_cc: &eframe::CreationContext<'_>, config: AppConfig) -> Self {
         let browser = Browser::new(config.browse_path.clone());
         Self {
@@ -28,16 +27,17 @@ impl ImageManagerApp {
             next_id: 0,
             prev_selected: None,
             show_browser: true,
-            show_tools_window: true,
             config,
         }
     }
 }
 
-impl eframe::App for ImageManagerApp {
+impl eframe::App for PhotographApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let viewport_rect = ctx.input(|i| i.viewport().inner_rect);
+
         // Track window size for saving on exit
-        if let Some(rect) = ctx.input(|i| i.viewport().inner_rect) {
+        if let Some(rect) = viewport_rect {
             self.config.window_width = Some(rect.width());
             self.config.window_height = Some(rect.height());
         }
@@ -124,14 +124,30 @@ impl eframe::App for ImageManagerApp {
             let active_id = self.active_viewer.unwrap();
             if let Some(vw) = self.viewers.iter_mut().find(|vw| vw.viewer.id() == active_id) {
                 let label = format!("Tools — {}", vw.viewer.filename());
-                egui::Window::new(&label)
+                let mut window = egui::Window::new(&label)
                     .id(egui::Id::new("tools_window"))
-                    .open(&mut self.show_tools_window)
-                    .default_size([300.0, 400.0])
-                    .default_pos([620.0, 660.0])
-                    .show(ctx, |ui| {
-                        vw.viewer.show_controls(ui);
-                    });
+                    .order(egui::Order::Foreground)
+                    .movable(false)
+                    .resizable(false);
+
+                if let Some(rect) = viewport_rect {
+                    const TOOLS_WIDTH: f32 = 320.0;
+                    const MARGIN: f32 = 8.0;
+                    let height = (rect.height() - (MARGIN * 2.0)).max(120.0);
+                    let x = (rect.right() - TOOLS_WIDTH - MARGIN).max(rect.left() + MARGIN);
+                    let y = rect.top() + MARGIN;
+                    window = window
+                        .fixed_pos(egui::pos2(x, y))
+                        .fixed_size(egui::vec2(TOOLS_WIDTH, height));
+                } else {
+                    window = window
+                        .default_size([320.0, 400.0])
+                        .default_pos([620.0, 50.0]);
+                }
+
+                window.show(ctx, |ui| {
+                    vw.viewer.show_controls(ui);
+                });
             }
         }
     }

@@ -5,6 +5,21 @@ use image::DynamicImage;
 pub const THUMB_SIZE: u32 = 300;
 
 static RAW_EXTS: &[&str] = &["raf", "dng", "nef", "cr2", "arw"];
+static SUPPORTED_IMAGE_EXTS: &[&str] = &[
+    "jpg", "jpeg", "png", "tiff", "tif", "webp", "bmp",
+    "raf", "dng", "nef", "cr2", "arw", "heic", "avif",
+];
+
+fn has_extension(path: &Path, exts: &[&str]) -> bool {
+    let Some(ext) = path.extension().map(|e| e.to_string_lossy()) else {
+        return false;
+    };
+    exts.iter().any(|known| ext.eq_ignore_ascii_case(known))
+}
+
+pub fn is_supported_image(path: &Path) -> bool {
+    has_extension(path, SUPPORTED_IMAGE_EXTS)
+}
 
 /// Returns the cached thumbnail path for a given source image.
 pub fn cache_path(source: &Path, cache_dir: &Path) -> PathBuf {
@@ -23,11 +38,7 @@ pub fn open_image(path: &Path) -> anyhow::Result<DynamicImage> {
     }
 
     // Fallback: try raw decode for known raw extensions.
-    let is_raw = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| RAW_EXTS.contains(&e.to_lowercase().as_str()))
-        .unwrap_or(false);
+    let is_raw = has_extension(path, RAW_EXTS);
 
     if !is_raw {
         // Re-attempt to get the original error message.
@@ -50,4 +61,3 @@ pub fn generate(source: &Path, dest: &Path) -> anyhow::Result<()> {
     thumb.save(dest)?;
     Ok(())
 }
-

@@ -1935,23 +1935,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "image-manager"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dirs",
- "eframe",
- "egui",
- "image",
- "imageproc",
- "kamadak-exif",
- "rawler",
- "serde",
- "serde_json",
- "toml",
-]
-
-[[package]]
 name = "image-webp"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3150,6 +3133,23 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "photograph"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "eframe",
+ "egui",
+ "image",
+ "imageproc",
+ "kamadak-exif",
+ "rawler",
+ "serde",
+ "serde_json",
+ "toml",
+]
 
 [[package]]
 name = "pin-project"

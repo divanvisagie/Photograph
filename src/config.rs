@@ -11,7 +11,7 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("image-manager").join("config.toml"))
+        dirs::config_dir().map(|d| d.join("photograph").join("config.toml"))
     }
 
     pub fn load() -> Self {

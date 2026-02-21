@@ -1,12 +1,7 @@
 use std::{collections::HashMap, path::PathBuf, sync::mpsc};
 
 const CELL: f32 = 170.0;
-
-static IMAGE_EXTS: &[&str] = &[
-    "jpg", "jpeg", "png", "tiff", "tif", "webp", "bmp",
-    // Raw — will fail gracefully; magick-rust handles these later
-    "raf", "dng", "heic", "avif",
-];
+const MAX_THUMB_JOBS: usize = 4;
 
 enum ThumbState {
     Loading,
@@ -81,10 +76,21 @@ impl Browser {
     }
 
     fn queue_pending_thumbs(&mut self, ctx: &egui::Context) {
+        let in_flight = self
+            .thumbnails
+            .values()
+            .filter(|state| matches!(state, ThumbState::Loading))
+            .count();
+        if in_flight >= MAX_THUMB_JOBS {
+            return;
+        }
+        let slots = MAX_THUMB_JOBS - in_flight;
+
         let to_queue: Vec<PathBuf> = self
             .images
             .iter()
             .filter(|(p, _)| !self.thumbnails.contains_key(p))
+            .take(slots)
             .map(|(p, _)| p.clone())
             .collect();
 
@@ -307,8 +313,5 @@ fn generate_thumb(path: &PathBuf, cache_dir: &PathBuf) -> Option<(Vec<u8>, usize
 }
 
 fn is_image(path: &std::path::Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| IMAGE_EXTS.contains(&e.to_lowercase().as_str()))
-        .unwrap_or(false)
+    crate::thumbnail::is_supported_image(path)
 }

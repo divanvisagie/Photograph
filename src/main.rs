@@ -8,7 +8,7 @@ mod state;
 mod thumbnail;
 mod viewer;
 
-use app::ImageManagerApp;
+use app::PhotographApp;
 use config::AppConfig;
 
 fn main() -> eframe::Result {
@@ -19,14 +19,14 @@ fn main() -> eframe::Result {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Image Manager")
+            .with_title("Photograph")
             .with_inner_size([width, height]),
         ..Default::default()
     };
 
     eframe::run_native(
-        "image-manager",
+        "photograph",
         native_options,
-        Box::new(|cc| Ok(Box::new(ImageManagerApp::new(cc, config)))),
+        Box::new(|cc| Ok(Box::new(PhotographApp::new(cc, config)))),
     )
 }
