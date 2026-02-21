@@ -1,5 +1,10 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+    mpsc,
+};
 
 use image::DynamicImage;
 use image::codecs::jpeg::JpegEncoder;
@@ -8,6 +13,7 @@ use image::codecs::png::{
 };
 use image::codecs::webp::WebPEncoder;
 use image::imageops::FilterType;
+use rayon::prelude::*;
 
 use crate::{browser::Browser, config::AppConfig, state::EditState, viewer::Viewer};
 
@@ -21,6 +27,13 @@ struct ViewerWindow {
 struct RenderTask {
     source_path: PathBuf,
     edit_state: EditState,
+}
+
+#[derive(Clone)]
+struct RenderJob {
+    source_path: PathBuf,
+    edit_state: EditState,
+    output_path: PathBuf,
 }
 
 #[derive(Clone, Copy)]
@@ -158,8 +171,11 @@ impl PhotographApp {
             self.render_status = "No open images to render".to_string();
             return;
         }
+        if let Err(err) = std::fs::create_dir_all(&output_dir) {
+            self.render_status = format!("Failed to create output directory: {}", err);
+            return;
+        }
 
-        let total = tasks.len();
         let options = RenderOptions {
             format: self.render_format,
             jpg_quality: self.render_jpg_quality.clamp(1, 100),
@@ -167,16 +183,19 @@ impl PhotographApp {
             resize_enabled: self.render_resize_enabled,
             resize_long_edge: self.render_resize_long_edge.max(1),
         };
+        let jobs = build_render_jobs(tasks, &output_dir, options.format);
+        let total = jobs.len();
         let output_dir_for_thread = output_dir.clone();
         let (tx, rx) = mpsc::channel();
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
-            let mut ok = 0usize;
-            let mut failed = 0usize;
-            let mut first_error: Option<String> = None;
+            let done = Arc::new(AtomicUsize::new(0));
+            let ok = Arc::new(AtomicUsize::new(0));
+            let failed = Arc::new(AtomicUsize::new(0));
+            let first_error = Arc::new(Mutex::new(None::<String>));
 
-            for (idx, task) in tasks.into_iter().enumerate() {
-                let filename = task
+            jobs.into_par_iter().for_each(|job| {
+                let filename = job
                     .source_path
                     .file_name()
                     .unwrap_or_default()
@@ -184,33 +203,41 @@ impl PhotographApp {
                     .into_owned();
 
                 if let Err(err) = render_single_image(
-                    &task.source_path,
-                    &task.edit_state,
-                    &output_dir_for_thread,
+                    &job.source_path,
+                    &job.edit_state,
+                    &job.output_path,
                     options,
                 ) {
-                    failed += 1;
-                    if first_error.is_none() {
-                        first_error = Some(format!("{}: {}", filename, err));
+                    failed.fetch_add(1, Ordering::Relaxed);
+                    if let Ok(mut first) = first_error.lock() {
+                        if first.is_none() {
+                            *first = Some(format!("{}: {}", filename, err));
+                        }
                     }
                 } else {
-                    ok += 1;
+                    ok.fetch_add(1, Ordering::Relaxed);
                 }
 
-                let done = idx + 1;
+                let done_now = done.fetch_add(1, Ordering::Relaxed) + 1;
+                let ok_now = ok.load(Ordering::Relaxed);
+                let failed_now = failed.load(Ordering::Relaxed);
                 let _ = tx.send(RenderEvent::Progress {
-                    done,
+                    done: done_now,
                     total,
-                    ok,
-                    failed,
+                    ok: ok_now,
+                    failed: failed_now,
                     current: filename,
                 });
                 ctx2.request_repaint();
-            }
+            });
+
+            let ok_final = ok.load(Ordering::Relaxed);
+            let failed_final = failed.load(Ordering::Relaxed);
+            let first_error = first_error.lock().ok().and_then(|v| v.clone());
 
             let _ = tx.send(RenderEvent::Finished {
-                ok,
-                failed,
+                ok: ok_final,
+                failed: failed_final,
                 total,
                 output_dir: output_dir_for_thread,
                 first_error,
@@ -321,34 +348,65 @@ fn expand_home_prefix(raw: &str) -> PathBuf {
 fn render_single_image(
     source_path: &Path,
     state: &EditState,
-    output_dir: &Path,
+    output_path: &Path,
     options: RenderOptions,
-) -> anyhow::Result<PathBuf> {
-    std::fs::create_dir_all(output_dir)?;
+) -> anyhow::Result<()> {
     let input = crate::thumbnail::open_image(source_path)?;
     let processed = crate::processing::transform::apply(&input, state);
     let rendered = apply_export_resize(processed, options);
-    let output_path = build_output_path(source_path, output_dir, options.format);
-    write_rendered_image(&rendered, &output_path, options)?;
-    Ok(output_path)
+    write_rendered_image(&rendered, output_path, options)?;
+    Ok(())
 }
 
-fn build_output_path(source_path: &Path, output_dir: &Path, format: RenderFormat) -> PathBuf {
+fn build_render_jobs(
+    tasks: Vec<RenderTask>,
+    output_dir: &Path,
+    format: RenderFormat,
+) -> Vec<RenderJob> {
+    let mut reserved = HashSet::new();
+    tasks
+        .into_iter()
+        .map(|task| {
+            let output_path =
+                build_output_path(&task.source_path, output_dir, format, &mut reserved);
+            RenderJob {
+                source_path: task.source_path,
+                edit_state: task.edit_state,
+                output_path,
+            }
+        })
+        .collect()
+}
+
+fn build_output_path(
+    source_path: &Path,
+    output_dir: &Path,
+    format: RenderFormat,
+    reserved: &mut HashSet<PathBuf>,
+) -> PathBuf {
     let stem = source_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("image");
     let base = output_dir.join(format!("{}.{}", stem, format.extension()));
-    if !base.exists() {
+    if output_path_available(&base, reserved) {
+        reserved.insert(base.clone());
         return base;
     }
     for n in 2..10000 {
         let candidate = output_dir.join(format!("{}-{}.{}", stem, n, format.extension()));
-        if !candidate.exists() {
+        if output_path_available(&candidate, reserved) {
+            reserved.insert(candidate.clone());
             return candidate;
         }
     }
-    output_dir.join(format!("{}-final.{}", stem, format.extension()))
+    let fallback = output_dir.join(format!("{}-final.{}", stem, format.extension()));
+    reserved.insert(fallback.clone());
+    fallback
+}
+
+fn output_path_available(path: &Path, reserved: &HashSet<PathBuf>) -> bool {
+    !reserved.contains(path) && !path.exists()
 }
 
 fn apply_export_resize(img: DynamicImage, options: RenderOptions) -> DynamicImage {
@@ -405,7 +463,23 @@ fn write_rendered_image(
 
 #[cfg(test)]
 mod tests {
-    use super::resized_dimensions;
+    use std::collections::HashSet;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{RenderFormat, build_output_path, resized_dimensions};
+
+    fn unique_test_dir(name: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "photograph-{}-{}-{}",
+            name,
+            std::process::id(),
+            nanos
+        ))
+    }
 
     #[test]
     fn resized_dimensions_skips_when_already_within_limit() {
@@ -420,6 +494,34 @@ mod tests {
     #[test]
     fn resized_dimensions_scales_portrait_preserving_aspect() {
         assert_eq!(resized_dimensions(3000, 6000, 2400), Some((1200, 2400)));
+    }
+
+    #[test]
+    fn build_output_path_disambiguates_duplicate_stems() {
+        let output_dir = unique_test_dir("render-path-dupes");
+        let mut reserved = HashSet::new();
+        let source = std::path::Path::new("/photos/IMG_0001.RAF");
+
+        let first = build_output_path(source, &output_dir, RenderFormat::Jpg, &mut reserved);
+        let second = build_output_path(source, &output_dir, RenderFormat::Jpg, &mut reserved);
+
+        assert_eq!(first, output_dir.join("IMG_0001.jpg"));
+        assert_eq!(second, output_dir.join("IMG_0001-2.jpg"));
+    }
+
+    #[test]
+    fn build_output_path_skips_existing_files() {
+        let output_dir = unique_test_dir("render-path-existing");
+        std::fs::create_dir_all(&output_dir).unwrap();
+        std::fs::write(output_dir.join("IMG_0001.jpg"), b"x").unwrap();
+
+        let source = std::path::Path::new("/photos/IMG_0001.RAF");
+        let mut reserved = HashSet::new();
+        let next = build_output_path(source, &output_dir, RenderFormat::Jpg, &mut reserved);
+
+        assert_eq!(next, output_dir.join("IMG_0001-2.jpg"));
+
+        let _ = std::fs::remove_dir_all(&output_dir);
     }
 }
 

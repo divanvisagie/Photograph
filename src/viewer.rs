@@ -10,15 +10,32 @@ use crate::state::{EditState, GradFilter, Rect};
 
 /// Downscale loaded images to this longest-edge size for the preview.
 const PREVIEW_MAX: u32 = 1920;
+/// During active slider drags, process a lower-resolution preview for responsiveness.
+const INTERACTIVE_PREVIEW_MAX: u32 = 960;
 const DEBOUNCE: Duration = Duration::from_millis(300);
+const INTERACTIVE_REFRESH: Duration = Duration::from_millis(90);
 
 /// Size in screen pixels for crop corner drag handles.
 const HANDLE_SIZE: f32 = 8.0;
 
 enum BgResult {
-    Loaded { path: PathBuf, img: DynamicImage },
+    Loaded {
+        path: PathBuf,
+        img: DynamicImage,
+    },
     LoadFailed(PathBuf),
-    Processed(Vec<u8>, usize, usize),
+    Processed {
+        generation: u64,
+        data: Vec<u8>,
+        width: usize,
+        height: usize,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProcessQuality {
+    Interactive,
+    Final,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -73,7 +90,9 @@ pub struct Viewer {
     preview: Option<DynamicImage>,
     pub edit_state: EditState,
     needs_process: bool,
+    needs_final_process: bool,
     last_slider_change: Option<Instant>,
+    last_interactive_process: Option<Instant>,
     texture: Option<egui::TextureHandle>,
     original_texture: Option<egui::TextureHandle>,
     split_view: bool,
@@ -91,6 +110,8 @@ pub struct Viewer {
     crop_create_origin: Option<egui::Pos2>,
     loading: bool,
     processing: bool,
+    requested_generation: u64,
+    in_flight_generation: Option<u64>,
     pub metadata: Option<crate::metadata::ImageMetadata>,
     tx: mpsc::SyncSender<BgResult>,
     rx: mpsc::Receiver<BgResult>,
@@ -105,7 +126,9 @@ impl Viewer {
             preview: None,
             edit_state: EditState::default(),
             needs_process: false,
+            needs_final_process: false,
             last_slider_change: None,
+            last_interactive_process: None,
             texture: None,
             original_texture: None,
             split_view: false,
@@ -118,6 +141,8 @@ impl Viewer {
             crop_create_origin: None,
             loading: false,
             processing: false,
+            requested_generation: 0,
+            in_flight_generation: None,
             metadata: None,
             tx,
             rx,
@@ -151,9 +176,14 @@ impl Viewer {
         self.original_texture = None;
         self.edit_state = EditState::default();
         self.needs_process = false;
+        self.needs_final_process = false;
         self.last_slider_change = None;
+        self.last_interactive_process = None;
         self.loading = true;
         self.processing = false;
+        // Invalidate any in-flight processing result from the previous image.
+        self.requested_generation = self.requested_generation.wrapping_add(1);
+        self.in_flight_generation = None;
         self.crop_mode = false;
         self.pending_crop = None;
         self.crop_drag = None;
@@ -180,7 +210,7 @@ impl Viewer {
         });
     }
 
-    fn trigger_process(&mut self, ctx: &egui::Context) {
+    fn trigger_process(&mut self, ctx: &egui::Context, quality: ProcessQuality) {
         let Some(ref preview) = self.preview else {
             return;
         };
@@ -189,20 +219,51 @@ impl Viewer {
         }
         self.processing = true;
         self.needs_process = false;
-        self.last_slider_change = None;
+        match quality {
+            ProcessQuality::Interactive => {
+                self.needs_final_process = true;
+                self.last_interactive_process = Some(Instant::now());
+            }
+            ProcessQuality::Final => {
+                self.needs_final_process = false;
+                self.last_slider_change = None;
+                self.last_interactive_process = None;
+            }
+        }
+        self.requested_generation = self.requested_generation.wrapping_add(1);
+        let generation = self.requested_generation;
+        self.in_flight_generation = Some(generation);
 
         let img = preview.clone();
         let state = self.edit_state.clone();
         let tx = self.tx.clone();
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
-            let result = crate::processing::transform::apply(&img, &state);
+            let source = match quality {
+                ProcessQuality::Interactive => downscale_for_interactive(img),
+                ProcessQuality::Final => img,
+            };
+            let result = crate::processing::transform::apply(&source, &state);
             let rgba = result.to_rgba8();
             let w = rgba.width() as usize;
             let h = rgba.height() as usize;
-            let _ = tx.send(BgResult::Processed(rgba.into_raw(), w, h));
+            let _ = tx.send(BgResult::Processed {
+                generation,
+                data: rgba.into_raw(),
+                width: w,
+                height: h,
+            });
             ctx2.request_repaint();
         });
+    }
+
+    fn mark_inflight_stale_if_needed(&mut self) {
+        bump_requested_generation_for_pending_changes(
+            self.processing,
+            self.needs_process,
+            self.in_flight_generation,
+            &mut self.requested_generation,
+        );
     }
 
     pub fn drain(&mut self, ctx: &egui::Context) {
@@ -213,6 +274,8 @@ impl Viewer {
                         self.preview = Some(img);
                         self.loading = false;
                         self.needs_process = true;
+                        self.needs_final_process = false;
+                        self.last_interactive_process = None;
                     }
                 }
                 BgResult::LoadFailed(path) => {
@@ -220,8 +283,17 @@ impl Viewer {
                         self.loading = false;
                     }
                 }
-                BgResult::Processed(data, w, h) => {
+                BgResult::Processed {
+                    generation,
+                    data,
+                    width: w,
+                    height: h,
+                } => {
                     self.processing = false;
+                    self.in_flight_generation = None;
+                    if generation != self.requested_generation {
+                        continue;
+                    }
                     let img = egui::ColorImage::from_rgba_unmultiplied([w, h], &data);
                     self.texture = Some(ctx.load_texture(
                         format!("viewer_tex_{}", self.id),
@@ -264,16 +336,37 @@ impl Viewer {
     }
 
     pub fn show_image(&mut self, ui: &mut egui::Ui) {
-        // Kick off processing when ready, respecting debounce for sliders.
-        if self.needs_process && !self.processing && self.preview.is_some() {
-            let debounce_done = self
-                .last_slider_change
-                .map(|t| t.elapsed() >= DEBOUNCE)
-                .unwrap_or(true);
+        // If edits arrive while processing is active, bump the requested generation
+        // so the in-flight result is ignored on arrival.
+        self.mark_inflight_stale_if_needed();
+
+        // Kick off processing when ready. During active slider drags, run low-res
+        // interactive passes; after debounce settle, run a final full-quality pass.
+        let work_pending = self.needs_process || self.needs_final_process;
+        if work_pending && !self.processing && self.preview.is_some() {
+            let since_change = self.last_slider_change.map(|t| t.elapsed());
+            let debounce_done = since_change.map(|d| d >= DEBOUNCE).unwrap_or(true);
+
             if debounce_done {
-                self.trigger_process(ui.ctx());
-            } else {
-                ui.ctx().request_repaint_after(DEBOUNCE);
+                self.trigger_process(ui.ctx(), ProcessQuality::Final);
+            } else if self.needs_process {
+                let interactive_ready = self
+                    .last_interactive_process
+                    .map(|t| t.elapsed() >= INTERACTIVE_REFRESH)
+                    .unwrap_or(true);
+                if interactive_ready {
+                    self.trigger_process(ui.ctx(), ProcessQuality::Interactive);
+                } else {
+                    ui.ctx().request_repaint_after(INTERACTIVE_REFRESH);
+                }
+                if let Some(elapsed) = since_change {
+                    let until_final = DEBOUNCE.saturating_sub(elapsed);
+                    ui.ctx()
+                        .request_repaint_after(until_final.min(INTERACTIVE_REFRESH));
+                }
+            } else if let Some(elapsed) = since_change {
+                ui.ctx()
+                    .request_repaint_after(DEBOUNCE.saturating_sub(elapsed));
             }
         }
 
@@ -675,6 +768,25 @@ impl Viewer {
                 }
             });
         }
+    }
+}
+
+fn bump_requested_generation_for_pending_changes(
+    processing: bool,
+    needs_process: bool,
+    in_flight_generation: Option<u64>,
+    requested_generation: &mut u64,
+) {
+    if processing && needs_process && in_flight_generation == Some(*requested_generation) {
+        *requested_generation = requested_generation.wrapping_add(1);
+    }
+}
+
+fn downscale_for_interactive(img: DynamicImage) -> DynamicImage {
+    if img.width() > INTERACTIVE_PREVIEW_MAX || img.height() > INTERACTIVE_PREVIEW_MAX {
+        img.thumbnail(INTERACTIVE_PREVIEW_MAX, INTERACTIVE_PREVIEW_MAX)
+    } else {
+        img
     }
 }
 
@@ -1379,4 +1491,60 @@ fn show_exif(ui: &mut egui::Ui, meta: &crate::metadata::ImageMetadata) {
             row("ISO", meta.iso.map(|v| v.to_string()));
             row("Focal length", meta.focal_length.clone());
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use image::{DynamicImage, ImageBuffer, Rgba};
+
+    use super::{
+        INTERACTIVE_PREVIEW_MAX, bump_requested_generation_for_pending_changes,
+        downscale_for_interactive,
+    };
+
+    #[test]
+    fn bumps_generation_when_pending_changes_arrive_during_processing() {
+        let mut requested = 4_u64;
+        bump_requested_generation_for_pending_changes(true, true, Some(4), &mut requested);
+        assert_eq!(requested, 5);
+    }
+
+    #[test]
+    fn does_not_bump_generation_when_processing_is_idle() {
+        let mut requested = 7_u64;
+        bump_requested_generation_for_pending_changes(false, true, Some(7), &mut requested);
+        assert_eq!(requested, 7);
+    }
+
+    #[test]
+    fn does_not_bump_generation_more_than_once_for_same_inflight_job() {
+        let mut requested = 9_u64;
+        bump_requested_generation_for_pending_changes(true, true, Some(9), &mut requested);
+        bump_requested_generation_for_pending_changes(true, true, Some(9), &mut requested);
+        assert_eq!(requested, 10);
+    }
+
+    #[test]
+    fn downscale_for_interactive_reduces_long_edge() {
+        let img = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(
+            INTERACTIVE_PREVIEW_MAX * 2,
+            INTERACTIVE_PREVIEW_MAX,
+            Rgba([255, 0, 0, 255]),
+        ));
+        let out = downscale_for_interactive(img);
+        assert!(out.width() <= INTERACTIVE_PREVIEW_MAX);
+        assert!(out.height() <= INTERACTIVE_PREVIEW_MAX);
+    }
+
+    #[test]
+    fn downscale_for_interactive_keeps_small_images() {
+        let img = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(
+            INTERACTIVE_PREVIEW_MAX / 2,
+            INTERACTIVE_PREVIEW_MAX / 2,
+            Rgba([255, 0, 0, 255]),
+        ));
+        let out = downscale_for_interactive(img);
+        assert_eq!(out.width(), INTERACTIVE_PREVIEW_MAX / 2);
+        assert_eq!(out.height(), INTERACTIVE_PREVIEW_MAX / 2);
+    }
 }
