@@ -6,7 +6,7 @@ use std::{
 
 use image::DynamicImage;
 
-use crate::state::{EditState, Rect};
+use crate::state::{EditState, GradFilter, Rect};
 
 /// Downscale loaded images to this longest-edge size for the preview.
 const PREVIEW_MAX: u32 = 1920;
@@ -181,7 +181,9 @@ impl Viewer {
     }
 
     fn trigger_process(&mut self, ctx: &egui::Context) {
-        let Some(ref preview) = self.preview else { return };
+        let Some(ref preview) = self.preview else {
+            return;
+        };
         if self.processing {
             return;
         }
@@ -284,14 +286,12 @@ impl Viewer {
                 self.crop_mode = !self.crop_mode;
                 if self.crop_mode {
                     // Enter crop mode: start with full image or existing applied crop
-                    self.pending_crop = Some(
-                        self.edit_state.crop.clone().unwrap_or(Rect {
-                            x: 0.0,
-                            y: 0.0,
-                            width: 1.0,
-                            height: 1.0,
-                        }),
-                    );
+                    self.pending_crop = Some(self.edit_state.crop.clone().unwrap_or(Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 1.0,
+                        height: 1.0,
+                    }));
                 } else {
                     // Exiting crop mode discards unapplied selection
                     self.pending_crop = None;
@@ -407,7 +407,11 @@ impl Viewer {
     /// Handle crop drag interaction on the pending crop and draw the overlay.
     fn handle_crop_interaction(&mut self, ui: &mut egui::Ui, img_rect: egui::Rect) {
         // Consume pointer events over the image so they don't drag the window.
-        ui.interact(img_rect, ui.id().with("crop_interact"), egui::Sense::click_and_drag());
+        ui.interact(
+            img_rect,
+            ui.id().with("crop_interact"),
+            egui::Sense::click_and_drag(),
+        );
 
         let pointer = ui.input(|i| i.pointer.clone());
         let aspect_ratio = self.effective_crop_ratio();
@@ -449,8 +453,7 @@ impl Viewer {
                         }
                         self.crop_drag = Some(t);
                         if matches!(t, DragTarget::Interior) {
-                            self.crop_drag_start_pos =
-                                Some(screen_to_norm_pos(pos, img_rect));
+                            self.crop_drag_start_pos = Some(screen_to_norm_pos(pos, img_rect));
                             self.crop_drag_start_rect = self.pending_crop.clone();
                         }
                     }
@@ -478,10 +481,10 @@ impl Viewer {
                                     let dx = nx - start.x;
                                     let dy = ny - start.y;
                                     if let Some(ref mut pc) = self.pending_crop {
-                                        pc.x = (start_rect.x + dx)
-                                            .clamp(0.0, 1.0 - start_rect.width);
-                                        pc.y = (start_rect.y + dy)
-                                            .clamp(0.0, 1.0 - start_rect.height);
+                                        pc.x =
+                                            (start_rect.x + dx).clamp(0.0, 1.0 - start_rect.width);
+                                        pc.y =
+                                            (start_rect.y + dy).clamp(0.0, 1.0 - start_rect.height);
                                     }
                                 }
                             }
@@ -510,8 +513,7 @@ impl Viewer {
                 }
             }
             if resp.dragged() {
-                if let (Some(pos), Some(origin)) =
-                    (pointer.interact_pos(), self.crop_create_origin)
+                if let (Some(pos), Some(origin)) = (pointer.interact_pos(), self.crop_create_origin)
                 {
                     if let Some(ref mut crop) = self.pending_crop {
                         let n = screen_to_norm_pos(pos, img_rect);
@@ -550,6 +552,15 @@ impl Viewer {
                 ui.separator();
 
                 show_transform_section(
+                    ui,
+                    &mut self.edit_state,
+                    &mut self.needs_process,
+                    &mut self.last_slider_change,
+                );
+
+                ui.separator();
+
+                show_color_section(
                     ui,
                     &mut self.edit_state,
                     &mut self.needs_process,
@@ -785,11 +796,8 @@ fn draw_fitted_image(
         egui::Color32::WHITE,
     );
     if processing_overlay {
-        ui.painter().rect_filled(
-            img_rect,
-            0.0,
-            egui::Color32::from_black_alpha(80),
-        );
+        ui.painter()
+            .rect_filled(img_rect, 0.0, egui::Color32::from_black_alpha(80));
     }
     img_rect
 }
@@ -1016,6 +1024,291 @@ fn show_transform_section(
             state.straighten = 0.0;
             state.keystone.vertical = 0.0;
             state.keystone.horizontal = 0.0;
+            *needs_process = true;
+            *last_slider_change = None;
+        }
+    }
+}
+
+fn show_color_section(
+    ui: &mut egui::Ui,
+    state: &mut EditState,
+    needs_process: &mut bool,
+    last_slider_change: &mut Option<Instant>,
+) {
+    ui.label(egui::RichText::new("Color").strong());
+    ui.add_space(4.0);
+
+    ui.horizontal(|ui| {
+        ui.label("Exposure");
+        let resp = ui.add(
+            egui::Slider::new(&mut state.exposure, -3.0_f32..=3.0_f32)
+                .suffix(" EV")
+                .fixed_decimals(2)
+                .clamping(egui::SliderClamping::Always),
+        );
+        if resp.changed() {
+            *needs_process = true;
+            *last_slider_change = Some(Instant::now());
+        }
+        if state.exposure != 0.0 && ui.small_button("↺").clicked() {
+            state.exposure = 0.0;
+            *needs_process = true;
+            *last_slider_change = None;
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Contrast");
+        let resp = ui.add(
+            egui::Slider::new(&mut state.contrast, -1.0_f32..=1.0_f32)
+                .fixed_decimals(2)
+                .clamping(egui::SliderClamping::Always),
+        );
+        if resp.changed() {
+            *needs_process = true;
+            *last_slider_change = Some(Instant::now());
+        }
+        if state.contrast != 0.0 && ui.small_button("↺").clicked() {
+            state.contrast = 0.0;
+            *needs_process = true;
+            *last_slider_change = None;
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Highlights");
+        let resp = ui.add(
+            egui::Slider::new(&mut state.highlights, -1.0_f32..=1.0_f32)
+                .fixed_decimals(2)
+                .clamping(egui::SliderClamping::Always),
+        );
+        if resp.changed() {
+            *needs_process = true;
+            *last_slider_change = Some(Instant::now());
+        }
+        if state.highlights != 0.0 && ui.small_button("↺").clicked() {
+            state.highlights = 0.0;
+            *needs_process = true;
+            *last_slider_change = None;
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Shadows");
+        let resp = ui.add(
+            egui::Slider::new(&mut state.shadows, -1.0_f32..=1.0_f32)
+                .fixed_decimals(2)
+                .clamping(egui::SliderClamping::Always),
+        );
+        if resp.changed() {
+            *needs_process = true;
+            *last_slider_change = Some(Instant::now());
+        }
+        if state.shadows != 0.0 && ui.small_button("↺").clicked() {
+            state.shadows = 0.0;
+            *needs_process = true;
+            *last_slider_change = None;
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Temperature");
+        let resp = ui.add(
+            egui::Slider::new(&mut state.temperature, -1.0_f32..=1.0_f32)
+                .fixed_decimals(2)
+                .clamping(egui::SliderClamping::Always),
+        );
+        if resp.changed() {
+            *needs_process = true;
+            *last_slider_change = Some(Instant::now());
+        }
+        if state.temperature != 0.0 && ui.small_button("↺").clicked() {
+            state.temperature = 0.0;
+            *needs_process = true;
+            *last_slider_change = None;
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Saturation");
+        let resp = ui.add(
+            egui::Slider::new(&mut state.saturation, -1.0_f32..=1.0_f32)
+                .fixed_decimals(2)
+                .clamping(egui::SliderClamping::Always),
+        );
+        if resp.changed() {
+            *needs_process = true;
+            *last_slider_change = Some(Instant::now());
+        }
+        if state.saturation != 0.0 && ui.small_button("↺").clicked() {
+            state.saturation = 0.0;
+            *needs_process = true;
+            *last_slider_change = None;
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Hue Shift");
+        let resp = ui.add(
+            egui::Slider::new(&mut state.hue_shift, -180.0_f32..=180.0_f32)
+                .suffix("°")
+                .fixed_decimals(1)
+                .clamping(egui::SliderClamping::Always),
+        );
+        if resp.changed() {
+            *needs_process = true;
+            *last_slider_change = Some(Instant::now());
+        }
+        if state.hue_shift != 0.0 && ui.small_button("↺").clicked() {
+            state.hue_shift = 0.0;
+            *needs_process = true;
+            *last_slider_change = None;
+        }
+    });
+
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new("Selective Color").strong());
+    const HUE_LABELS: [&str; 8] = [
+        "Red", "Orange", "Yellow", "Green", "Cyan", "Blue", "Purple", "Pink",
+    ];
+    for (idx, label) in HUE_LABELS.iter().enumerate() {
+        let adj = &mut state.selective_color[idx];
+        egui::CollapsingHeader::new(*label).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Hue");
+                let resp = ui.add(
+                    egui::Slider::new(&mut adj.hue, -45.0_f32..=45.0_f32)
+                        .suffix("°")
+                        .fixed_decimals(1)
+                        .clamping(egui::SliderClamping::Always),
+                );
+                if resp.changed() {
+                    *needs_process = true;
+                    *last_slider_change = Some(Instant::now());
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Saturation");
+                let resp = ui.add(
+                    egui::Slider::new(&mut adj.saturation, -1.0_f32..=1.0_f32)
+                        .fixed_decimals(2)
+                        .clamping(egui::SliderClamping::Always),
+                );
+                if resp.changed() {
+                    *needs_process = true;
+                    *last_slider_change = Some(Instant::now());
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Lightness");
+                let resp = ui.add(
+                    egui::Slider::new(&mut adj.lightness, -1.0_f32..=1.0_f32)
+                        .fixed_decimals(2)
+                        .clamping(egui::SliderClamping::Always),
+                );
+                if resp.changed() {
+                    *needs_process = true;
+                    *last_slider_change = Some(Instant::now());
+                }
+            });
+        });
+    }
+
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new("Graduated Filter").strong());
+    let mut grad_enabled = state.graduated_filter.is_some();
+    if ui.checkbox(&mut grad_enabled, "Enable").changed() {
+        if grad_enabled {
+            if state.graduated_filter.is_none() {
+                state.graduated_filter = Some(GradFilter {
+                    top: 0.0,
+                    bottom: 0.6,
+                    exposure: -0.7,
+                });
+            }
+        } else {
+            state.graduated_filter = None;
+        }
+        *needs_process = true;
+        *last_slider_change = None;
+    }
+
+    if let Some(ref mut grad) = state.graduated_filter {
+        ui.horizontal(|ui| {
+            ui.label("Top");
+            let resp = ui.add(
+                egui::Slider::new(&mut grad.top, 0.0_f32..=1.0_f32)
+                    .fixed_decimals(2)
+                    .clamping(egui::SliderClamping::Always),
+            );
+            if resp.changed() {
+                *needs_process = true;
+                *last_slider_change = Some(Instant::now());
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Bottom");
+            let resp = ui.add(
+                egui::Slider::new(&mut grad.bottom, 0.0_f32..=1.0_f32)
+                    .fixed_decimals(2)
+                    .clamping(egui::SliderClamping::Always),
+            );
+            if resp.changed() {
+                *needs_process = true;
+                *last_slider_change = Some(Instant::now());
+            }
+        });
+        if grad.bottom < grad.top + 0.01 {
+            grad.bottom = (grad.top + 0.01).min(1.0);
+        }
+        if grad.top > grad.bottom - 0.01 {
+            grad.top = (grad.bottom - 0.01).max(0.0);
+        }
+        ui.horizontal(|ui| {
+            ui.label("Exposure");
+            let resp = ui.add(
+                egui::Slider::new(&mut grad.exposure, -3.0_f32..=3.0_f32)
+                    .suffix(" EV")
+                    .fixed_decimals(2)
+                    .clamping(egui::SliderClamping::Always),
+            );
+            if resp.changed() {
+                *needs_process = true;
+                *last_slider_change = Some(Instant::now());
+            }
+            if grad.exposure != 0.0 && ui.small_button("↺").clicked() {
+                grad.exposure = 0.0;
+                *needs_process = true;
+                *last_slider_change = None;
+            }
+        });
+    }
+
+    let selective_dirty = state.selective_color.iter().any(|adj| {
+        adj.hue.abs() > 0.001 || adj.saturation.abs() > 0.001 || adj.lightness.abs() > 0.001
+    });
+    let color_dirty = state.exposure != 0.0
+        || state.contrast != 0.0
+        || state.highlights != 0.0
+        || state.shadows != 0.0
+        || state.temperature != 0.0
+        || state.saturation != 0.0
+        || state.hue_shift != 0.0
+        || selective_dirty
+        || state.graduated_filter.is_some();
+    if color_dirty {
+        ui.add_space(4.0);
+        if ui.small_button("Reset color").clicked() {
+            state.exposure = 0.0;
+            state.contrast = 0.0;
+            state.highlights = 0.0;
+            state.shadows = 0.0;
+            state.temperature = 0.0;
+            state.saturation = 0.0;
+            state.hue_shift = 0.0;
+            state.selective_color = Default::default();
+            state.graduated_filter = None;
             *needs_process = true;
             *last_slider_change = None;
         }

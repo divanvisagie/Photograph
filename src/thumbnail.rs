@@ -6,8 +6,8 @@ pub const THUMB_SIZE: u32 = 300;
 
 static RAW_EXTS: &[&str] = &["raf", "dng", "nef", "cr2", "arw"];
 static SUPPORTED_IMAGE_EXTS: &[&str] = &[
-    "jpg", "jpeg", "png", "tiff", "tif", "webp", "bmp",
-    "raf", "dng", "nef", "cr2", "arw", "heic", "avif",
+    "jpg", "jpeg", "png", "tiff", "tif", "webp", "bmp", "raf", "dng", "nef", "cr2", "arw", "heic",
+    "avif",
 ];
 
 fn has_extension(path: &Path, exts: &[&str]) -> bool {
@@ -23,10 +23,7 @@ pub fn is_supported_image(path: &Path) -> bool {
 
 /// Returns the cached thumbnail path for a given source image.
 pub fn cache_path(source: &Path, cache_dir: &Path) -> PathBuf {
-    let stem = source
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
+    let stem = source.file_name().unwrap_or_default().to_string_lossy();
     cache_dir.join(format!("{}.webp", stem))
 }
 

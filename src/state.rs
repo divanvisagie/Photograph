@@ -10,7 +10,11 @@ pub struct HslAdjust {
 
 impl Default for HslAdjust {
     fn default() -> Self {
-        Self { hue: 0.0, saturation: 0.0, lightness: 0.0 }
+        Self {
+            hue: 0.0,
+            saturation: 0.0,
+            lightness: 0.0,
+        }
     }
 }
 
@@ -22,7 +26,10 @@ pub struct Keystone {
 
 impl Default for Keystone {
     fn default() -> Self {
-        Self { vertical: 0.0, horizontal: 0.0 }
+        Self {
+            vertical: 0.0,
+            horizontal: 0.0,
+        }
     }
 }
 
@@ -42,6 +49,7 @@ pub struct GradFilter {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct EditState {
     pub rotate: i32,
     pub flip_h: bool,
@@ -51,6 +59,8 @@ pub struct EditState {
     pub keystone: Keystone,
     pub exposure: f32,
     pub contrast: f32,
+    pub highlights: f32,
+    pub shadows: f32,
     pub temperature: f32,
     pub saturation: f32,
     pub hue_shift: f32,
@@ -70,6 +80,8 @@ impl Default for EditState {
             keystone: Keystone::default(),
             exposure: 0.0,
             contrast: 0.0,
+            highlights: 0.0,
+            shadows: 0.0,
             temperature: 0.0,
             saturation: 0.0,
             hue_shift: 0.0,

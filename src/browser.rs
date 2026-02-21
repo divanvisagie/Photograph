@@ -52,7 +52,9 @@ impl Browser {
         self.images.clear();
         self.thumbnails.clear();
 
-        let Ok(rd) = std::fs::read_dir(&self.current_dir) else { return };
+        let Ok(rd) = std::fs::read_dir(&self.current_dir) else {
+            return;
+        };
 
         for entry in rd.flatten() {
             let path = entry.path();
@@ -238,8 +240,7 @@ fn draw_thumb_cell(
     thumb: Option<(egui::TextureId, egui::Vec2)>,
     selected: bool,
 ) -> bool {
-    let (resp, painter) =
-        ui.allocate_painter(egui::vec2(CELL, CELL + 22.0), egui::Sense::click());
+    let (resp, painter) = ui.allocate_painter(egui::vec2(CELL, CELL + 22.0), egui::Sense::click());
     let rect = resp.rect;
 
     // Background
@@ -297,10 +298,7 @@ fn generate_thumb(path: &PathBuf, cache_dir: &PathBuf) -> Option<(Vec<u8>, usize
         image::open(&thumb_path).ok()?
     } else {
         let full = crate::thumbnail::open_image(path).ok()?;
-        let t = full.thumbnail(
-            crate::thumbnail::THUMB_SIZE,
-            crate::thumbnail::THUMB_SIZE,
-        );
+        let t = full.thumbnail(crate::thumbnail::THUMB_SIZE, crate::thumbnail::THUMB_SIZE);
         let _ = std::fs::create_dir_all(cache_dir);
         let _ = t.save(&thumb_path);
         t

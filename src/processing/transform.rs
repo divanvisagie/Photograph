@@ -1,7 +1,9 @@
 use image::{DynamicImage, Rgba};
-use imageproc::geometric_transformations::{rotate_about_center, warp, Interpolation, Projection};
+use imageproc::geometric_transformations::{Interpolation, Projection, rotate_about_center, warp};
 
 use crate::state::{EditState, Keystone};
+
+use super::{color, exposure, filters};
 
 /// Apply all geometry transforms from `state` to `img`.
 /// Order: straighten → keystone → orthogonal rotate → flip → crop.
@@ -54,6 +56,10 @@ pub fn apply(img: &DynamicImage, state: &EditState) -> DynamicImage {
         }
     }
 
+    out = exposure::apply(out, state);
+    out = color::apply(out, state);
+    out = filters::apply(out, state);
+
     out
 }
 
@@ -89,6 +95,11 @@ fn apply_keystone(img: DynamicImage, keystone: &Keystone) -> DynamicImage {
         return img;
     };
 
-    let warped = warp(&rgba, &projection, Interpolation::Bilinear, Rgba([0, 0, 0, 255]));
+    let warped = warp(
+        &rgba,
+        &projection,
+        Interpolation::Bilinear,
+        Rgba([0, 0, 0, 255]),
+    );
     DynamicImage::ImageRgba8(warped)
 }

@@ -53,9 +53,10 @@ impl eframe::App for PhotographApp {
         if sel != self.prev_selected {
             if let Some(ref path) = sel {
                 // Find existing viewer for this path, or create a new one
-                let existing = self.viewers.iter_mut().find(|vw| {
-                    vw.viewer.path() == Some(path)
-                });
+                let existing = self
+                    .viewers
+                    .iter_mut()
+                    .find(|vw| vw.viewer.path() == Some(path));
                 if let Some(vw) = existing {
                     vw.open = true;
                     self.active_viewer = Some(vw.viewer.id());
@@ -108,8 +109,8 @@ impl eframe::App for PhotographApp {
 
             // Detect clicks inside this viewer window to make it active
             if let Some(inner) = resp {
-                let clicked_inside = inner.response.hovered()
-                    && ctx.input(|i| i.pointer.any_pressed());
+                let clicked_inside =
+                    inner.response.hovered() && ctx.input(|i| i.pointer.any_pressed());
                 if clicked_inside {
                     newly_active = Some(vw.viewer.id());
                 }
@@ -122,7 +123,11 @@ impl eframe::App for PhotographApp {
         // Tool window — controls + EXIF for the active viewer
         if self.active_viewer.is_some() {
             let active_id = self.active_viewer.unwrap();
-            if let Some(vw) = self.viewers.iter_mut().find(|vw| vw.viewer.id() == active_id) {
+            if let Some(vw) = self
+                .viewers
+                .iter_mut()
+                .find(|vw| vw.viewer.id() == active_id)
+            {
                 let label = format!("Tools — {}", vw.viewer.filename());
                 let mut window = egui::Window::new(&label)
                     .id(egui::Id::new("tools_window"))
