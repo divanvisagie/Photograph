@@ -1174,45 +1174,52 @@ fn show_color_section(
     ];
     for (idx, label) in HUE_LABELS.iter().enumerate() {
         let adj = &mut state.selective_color[idx];
-        egui::CollapsingHeader::new(*label).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Hue");
-                let resp = ui.add(
-                    egui::Slider::new(&mut adj.hue, -45.0_f32..=45.0_f32)
-                        .suffix("°")
-                        .fixed_decimals(1)
-                        .clamping(egui::SliderClamping::Always),
-                );
-                if resp.changed() {
-                    *needs_process = true;
-                    *last_slider_change = Some(Instant::now());
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Saturation");
-                let resp = ui.add(
-                    egui::Slider::new(&mut adj.saturation, -1.0_f32..=1.0_f32)
-                        .fixed_decimals(2)
-                        .clamping(egui::SliderClamping::Always),
-                );
-                if resp.changed() {
-                    *needs_process = true;
-                    *last_slider_change = Some(Instant::now());
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Lightness");
-                let resp = ui.add(
-                    egui::Slider::new(&mut adj.lightness, -1.0_f32..=1.0_f32)
-                        .fixed_decimals(2)
-                        .clamping(egui::SliderClamping::Always),
-                );
-                if resp.changed() {
-                    *needs_process = true;
-                    *last_slider_change = Some(Instant::now());
-                }
-            });
+        let base = selective_base_color(idx);
+        let bg = selective_bg_color(base);
+        let label_color = selective_label_color(base);
+        egui::Frame::group(ui.style()).fill(bg).show(ui, |ui| {
+            egui::CollapsingHeader::new(egui::RichText::new(*label).strong().color(label_color))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Hue");
+                        let resp = ui.add(
+                            egui::Slider::new(&mut adj.hue, -45.0_f32..=45.0_f32)
+                                .suffix("°")
+                                .fixed_decimals(1)
+                                .clamping(egui::SliderClamping::Always),
+                        );
+                        if resp.changed() {
+                            *needs_process = true;
+                            *last_slider_change = Some(Instant::now());
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Saturation");
+                        let resp = ui.add(
+                            egui::Slider::new(&mut adj.saturation, -1.0_f32..=1.0_f32)
+                                .fixed_decimals(2)
+                                .clamping(egui::SliderClamping::Always),
+                        );
+                        if resp.changed() {
+                            *needs_process = true;
+                            *last_slider_change = Some(Instant::now());
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Lightness");
+                        let resp = ui.add(
+                            egui::Slider::new(&mut adj.lightness, -1.0_f32..=1.0_f32)
+                                .fixed_decimals(2)
+                                .clamping(egui::SliderClamping::Always),
+                        );
+                        if resp.changed() {
+                            *needs_process = true;
+                            *last_slider_change = Some(Instant::now());
+                        }
+                    });
+                });
         });
+        ui.add_space(4.0);
     }
 
     ui.add_space(6.0);
@@ -1312,6 +1319,34 @@ fn show_color_section(
             *needs_process = true;
             *last_slider_change = None;
         }
+    }
+}
+
+fn selective_base_color(idx: usize) -> egui::Color32 {
+    match idx {
+        0 => egui::Color32::from_rgb(220, 64, 64),  // Red
+        1 => egui::Color32::from_rgb(226, 140, 55), // Orange
+        2 => egui::Color32::from_rgb(224, 197, 67), // Yellow
+        3 => egui::Color32::from_rgb(74, 170, 86),  // Green
+        4 => egui::Color32::from_rgb(70, 176, 195), // Cyan
+        5 => egui::Color32::from_rgb(72, 120, 220), // Blue
+        6 => egui::Color32::from_rgb(145, 98, 208), // Purple
+        7 => egui::Color32::from_rgb(216, 102, 168), // Pink
+        _ => egui::Color32::GRAY,
+    }
+}
+
+fn selective_bg_color(base: egui::Color32) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 48)
+}
+
+fn selective_label_color(base: egui::Color32) -> egui::Color32 {
+    let luminance =
+        0.2126 * base.r() as f32 + 0.7152 * base.g() as f32 + 0.0722 * base.b() as f32;
+    if luminance > 160.0 {
+        egui::Color32::BLACK
+    } else {
+        egui::Color32::WHITE
     }
 }
 
