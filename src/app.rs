@@ -122,6 +122,7 @@ pub struct PhotographApp {
     preview_backend: PreviewBackend,
     preview_status_label: String,
     preview_status_details: Option<String>,
+    preview_status_vendor: Option<GpuVendor>,
     viewers: Vec<ViewerWindow>,
     active_viewer: Option<usize>,
     next_id: usize,
@@ -154,13 +155,14 @@ impl PhotographApp {
     ) -> Self {
         let browser = Browser::new(config.browse_path.clone());
         let output_dir = default_render_dir();
-        let (preview_status_label, preview_status_details) =
+        let (preview_status_label, preview_status_details, preview_status_vendor) =
             preview_status_summary(preview_backend);
         Self {
             browser,
             preview_backend,
             preview_status_label,
             preview_status_details,
+            preview_status_vendor,
             viewers: Vec::new(),
             active_viewer: None,
             next_id: 0,
@@ -667,6 +669,13 @@ impl eframe::App for PhotographApp {
                     self.show_render_window = true;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(vendor) = self.preview_status_vendor {
+                        let dot = egui::RichText::new("●")
+                            .color(vendor.badge_fill())
+                            .size(14.0);
+                        ui.label(dot)
+                            .on_hover_text(format!("{} GPU", vendor.badge_text()));
+                    }
                     let response = ui.label(
                         egui::RichText::new(&self.preview_status_label)
                             .weak()
@@ -907,7 +916,7 @@ impl eframe::App for PhotographApp {
     }
 }
 
-fn preview_status_summary(backend: PreviewBackend) -> (String, Option<String>) {
+fn preview_status_summary(backend: PreviewBackend) -> (String, Option<String>, Option<GpuVendor>) {
     let status = crate::processing::gpu_spike::runtime_status();
     let adapter_desc = match (
         status.adapter_name.as_deref(),
@@ -917,11 +926,13 @@ fn preview_status_summary(backend: PreviewBackend) -> (String, Option<String>) {
         (Some(name), None) => name.to_string(),
         _ => "n/a".to_string(),
     };
+    let vendor = detect_gpu_vendor(&status);
     let driver = status
         .adapter_driver
-        .unwrap_or_else(|| "unknown".to_string());
-
-    match backend {
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_string();
+    let (label, details) = match backend {
         PreviewBackend::Cpu => (
             "GPU accel: off (cpu mode)".to_string(),
             Some("Preview backend forced to CPU; GPU acceleration is disabled.".to_string()),
@@ -958,5 +969,82 @@ fn preview_status_summary(backend: PreviewBackend) -> (String, Option<String>) {
                 )
             }
         }
+    };
+
+    (label, details, vendor)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GpuVendor {
+    Nvidia,
+    Amd,
+    Apple,
+    Intel,
+}
+
+impl GpuVendor {
+    fn badge_text(self) -> &'static str {
+        match self {
+            GpuVendor::Nvidia => "NVIDIA",
+            GpuVendor::Amd => "AMD",
+            GpuVendor::Apple => "APPLE",
+            GpuVendor::Intel => "INTEL",
+        }
     }
+
+    fn badge_fill(self) -> egui::Color32 {
+        match self {
+            GpuVendor::Nvidia => egui::Color32::from_rgb(118, 185, 0),
+            GpuVendor::Amd => egui::Color32::from_rgb(237, 28, 36),
+            GpuVendor::Apple => egui::Color32::from_rgb(120, 120, 120),
+            GpuVendor::Intel => egui::Color32::from_rgb(0, 113, 197),
+        }
+    }
+}
+
+fn detect_gpu_vendor(status: &crate::processing::gpu_spike::RuntimeStatus) -> Option<GpuVendor> {
+    let vendor_id = status.adapter_vendor_id.unwrap_or_default();
+    if vendor_id == 0x10DE {
+        return Some(GpuVendor::Nvidia);
+    }
+    if vendor_id == 0x1002 || vendor_id == 0x1022 {
+        return Some(GpuVendor::Amd);
+    }
+    if vendor_id == 0x8086 {
+        return Some(GpuVendor::Intel);
+    }
+    if vendor_id == 0x106B {
+        return Some(GpuVendor::Apple);
+    }
+
+    let mut haystack = String::new();
+    if let Some(name) = &status.adapter_name {
+        haystack.push_str(&name.to_ascii_lowercase());
+    }
+    if let Some(driver) = &status.adapter_driver {
+        if !haystack.is_empty() {
+            haystack.push(' ');
+        }
+        haystack.push_str(&driver.to_ascii_lowercase());
+    }
+
+    if haystack.contains("nvidia") {
+        return Some(GpuVendor::Nvidia);
+    }
+    if haystack.contains("amd") || haystack.contains("radeon") {
+        return Some(GpuVendor::Amd);
+    }
+    if haystack.contains("intel") || haystack.contains("iris") || haystack.contains("arc") {
+        return Some(GpuVendor::Intel);
+    }
+    if haystack.contains("apple")
+        || haystack.contains("m1")
+        || haystack.contains("m2")
+        || haystack.contains("m3")
+        || haystack.contains("m4")
+    {
+        return Some(GpuVendor::Apple);
+    }
+
+    None
 }

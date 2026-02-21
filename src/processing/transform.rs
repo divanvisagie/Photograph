@@ -3,7 +3,7 @@ use imageproc::geometric_transformations::{Interpolation, Projection, rotate_abo
 
 use crate::state::{EditState, Keystone};
 
-use super::{color, exposure, filters};
+use super::{color, exposure, filters, sharpness};
 
 /// Apply all geometry transforms from `state` to `img`.
 /// Order: straighten → keystone → orthogonal rotate → flip → crop.
@@ -59,6 +59,7 @@ pub fn apply(img: &DynamicImage, state: &EditState) -> DynamicImage {
     out = exposure::apply(out, state);
     out = color::apply(out, state);
     out = filters::apply(out, state);
+    out = sharpness::apply(out, state);
 
     out
 }

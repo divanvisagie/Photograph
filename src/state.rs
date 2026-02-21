@@ -67,6 +67,7 @@ pub struct EditState {
     // red, orange, yellow, green, cyan, blue, purple, pink
     pub selective_color: [HslAdjust; 8],
     pub graduated_filter: Option<GradFilter>,
+    pub sharpness: f32,
 }
 
 impl Default for EditState {
@@ -87,6 +88,7 @@ impl Default for EditState {
             hue_shift: 0.0,
             selective_color: Default::default(),
             graduated_filter: None,
+            sharpness: 0.0,
         }
     }
 }

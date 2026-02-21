@@ -19,6 +19,7 @@ struct GpuContext {
     adapter_name: String,
     adapter_backend: String,
     adapter_driver: String,
+    adapter_vendor_id: u32,
 }
 
 static GPU_CONTEXT: OnceLock<Option<GpuContext>> = OnceLock::new();
@@ -27,6 +28,7 @@ static GPU_FALLBACK_REPORTED: AtomicBool = AtomicBool::new(false);
 #[derive(Clone, Debug, Default)]
 pub struct RuntimeStatus {
     pub available: bool,
+    pub adapter_vendor_id: Option<u32>,
     pub adapter_name: Option<String>,
     pub adapter_backend: Option<String>,
     pub adapter_driver: Option<String>,
@@ -64,6 +66,7 @@ pub fn runtime_status() -> RuntimeStatus {
     match gpu_context() {
         Some(ctx) => RuntimeStatus {
             available: true,
+            adapter_vendor_id: Some(ctx.adapter_vendor_id),
             adapter_name: Some(ctx.adapter_name.clone()),
             adapter_backend: Some(ctx.adapter_backend.clone()),
             adapter_driver: Some(ctx.adapter_driver.clone()),
@@ -308,6 +311,7 @@ fn init_gpu_context() -> Option<GpuContext> {
         compatible_surface: None,
     }))?;
     let adapter_info = adapter.get_info();
+    let adapter_vendor_id = adapter_info.vendor;
     let adapter_name = adapter_info.name;
     let adapter_backend = adapter_info.backend.to_string();
     let adapter_driver = if adapter_info.driver.trim().is_empty() {
@@ -388,6 +392,7 @@ fn init_gpu_context() -> Option<GpuContext> {
         adapter_name,
         adapter_backend,
         adapter_driver,
+        adapter_vendor_id,
     })
 }
 

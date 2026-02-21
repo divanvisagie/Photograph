@@ -137,6 +137,8 @@ pub struct Viewer {
     crop_drag_start_rect: Option<Rect>,
     /// Normalized position where the initial drag began (for creating new rects).
     crop_create_origin: Option<egui::Pos2>,
+    zoom: f32,
+    pan_offset: egui::Vec2,
     loading: bool,
     processing: bool,
     requested_generation: u64,
@@ -172,6 +174,8 @@ impl Viewer {
             crop_drag_start_pos: None,
             crop_drag_start_rect: None,
             crop_create_origin: None,
+            zoom: 1.0,
+            pan_offset: egui::Vec2::ZERO,
             loading: false,
             processing: false,
             requested_generation: 0,
@@ -225,6 +229,8 @@ impl Viewer {
         self.pending_crop = None;
         self.crop_drag = None;
         self.crop_create_origin = None;
+        self.zoom = 1.0;
+        self.pan_offset = egui::Vec2::ZERO;
         self.metadata = crate::metadata::read(&path).ok();
 
         let tx = self.tx.clone();
@@ -580,7 +586,15 @@ impl Viewer {
                 let half_w = (avail_w - ui.spacing().item_spacing.x) / 2.0;
                 ui.horizontal(|ui| {
                     if let Some(ref orig) = original_texture {
-                        draw_fitted_image(ui, orig, half_w, img_max_h, false);
+                        draw_fitted_image(
+                            ui,
+                            orig,
+                            half_w,
+                            img_max_h,
+                            1.0,
+                            egui::Vec2::ZERO,
+                            false,
+                        );
                     } else {
                         ui.allocate_ui(egui::vec2(half_w, img_max_h), |ui| {
                             ui.centered_and_justified(|ui| {
@@ -588,13 +602,95 @@ impl Viewer {
                             });
                         });
                     }
-                    draw_fitted_image(ui, tex, half_w, img_max_h, processing);
+                    draw_fitted_image(
+                        ui,
+                        tex,
+                        half_w,
+                        img_max_h,
+                        1.0,
+                        egui::Vec2::ZERO,
+                        processing,
+                    );
                 });
             } else {
-                let img_rect = draw_fitted_image(ui, tex, avail_w, img_max_h, processing);
-
                 if self.crop_mode {
+                    // Disable zoom/pan while in crop mode
+                    let img_rect = draw_fitted_image(
+                        ui,
+                        tex,
+                        avail_w,
+                        img_max_h,
+                        1.0,
+                        egui::Vec2::ZERO,
+                        processing,
+                    );
                     self.handle_crop_interaction(ui, img_rect);
+                } else {
+                    let img_rect = draw_fitted_image(
+                        ui,
+                        tex,
+                        avail_w,
+                        img_max_h,
+                        self.zoom,
+                        self.pan_offset,
+                        processing,
+                    );
+
+                    // Compute fit_size for clamping
+                    let tex_size = tex.size_vec2();
+                    let fit_scale = (avail_w / tex_size.x).min(img_max_h / tex_size.y);
+                    let fit_size = tex_size * fit_scale;
+                    let viewport_rect =
+                        egui::Rect::from_center_size(img_rect.center() - self.pan_offset, fit_size);
+
+                    // Single interaction widget for zoom/pan — only the hovered
+                    // viewer responds to scroll, so stacked windows don't conflict.
+                    let sense = if self.zoom > 1.0 {
+                        egui::Sense::click_and_drag()
+                    } else {
+                        egui::Sense::click()
+                    };
+                    let resp = ui.interact(viewport_rect, ui.id().with("zoom_pan"), sense);
+
+                    // Scroll-to-zoom (only when this widget is hovered)
+                    if resp.hovered() {
+                        let scroll_delta = ui.input(|i| i.raw_scroll_delta.y);
+                        if scroll_delta != 0.0 {
+                            let old_zoom = self.zoom;
+                            let new_zoom =
+                                (self.zoom * (1.1_f32).powf(scroll_delta / 50.0)).clamp(1.0, 10.0);
+                            if new_zoom != old_zoom {
+                                // Zoom toward cursor
+                                if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                                    let img_center = viewport_rect.center();
+                                    let rel = cursor_pos.to_vec2()
+                                        - img_center.to_vec2()
+                                        - self.pan_offset;
+                                    self.pan_offset += rel * (1.0 - new_zoom / old_zoom);
+                                }
+                                self.zoom = new_zoom;
+                            }
+                        }
+                    }
+
+                    // Drag-to-pan when zoomed in
+                    if self.zoom > 1.0 {
+                        if resp.dragged() {
+                            self.pan_offset += resp.drag_delta();
+                        }
+                        // Double-click to reset zoom
+                        if resp.double_clicked() {
+                            self.zoom = 1.0;
+                            self.pan_offset = egui::Vec2::ZERO;
+                        }
+                    }
+
+                    // Clamp pan so image doesn't leave viewport excessively
+                    let zoomed_size = fit_size * self.zoom;
+                    let max_pan_x = ((zoomed_size.x - fit_size.x) / 2.0).max(0.0);
+                    let max_pan_y = ((zoomed_size.y - fit_size.y) / 2.0).max(0.0);
+                    self.pan_offset.x = self.pan_offset.x.clamp(-max_pan_x, max_pan_x);
+                    self.pan_offset.y = self.pan_offset.y.clamp(-max_pan_y, max_pan_y);
                 }
             }
         } else {
@@ -606,8 +702,9 @@ impl Viewer {
 
     /// Handle crop drag interaction on the pending crop and draw the overlay.
     fn handle_crop_interaction(&mut self, ui: &mut egui::Ui, img_rect: egui::Rect) {
-        // Consume pointer events over the image so they don't drag the window.
-        ui.interact(
+        // Single interaction widget — only the hovered viewer responds,
+        // so stacked windows don't conflict.
+        let crop_resp = ui.interact(
             img_rect,
             ui.id().with("crop_interact"),
             egui::Sense::click_and_drag(),
@@ -615,6 +712,7 @@ impl Viewer {
 
         let pointer = ui.input(|i| i.pointer.clone());
         let aspect_ratio = self.effective_crop_ratio();
+        let is_this_viewer = crop_resp.hovered() || crop_resp.dragged() || self.crop_drag.is_some();
 
         // Determine which crop rect to show and interact with.
         // If there's a pending crop, that takes priority for interaction.
@@ -631,30 +729,32 @@ impl Viewer {
             // Always draw interactive overlay (handles + thirds) for visible crop
             draw_crop_overlay(ui, img_rect, crop_screen, true);
 
-            // Handle drag initiation
-            if let Some(pos) = pointer.interact_pos() {
-                if pointer.any_pressed() && self.crop_drag.is_none() && img_rect.contains(pos) {
-                    let corners = corner_rects(crop_screen);
-                    let mut target = None;
-                    for (i, cr) in corners.iter().enumerate() {
-                        if cr.contains(pos) {
-                            target = Some(DragTarget::Corner(i as u8));
-                            break;
+            // Handle drag initiation — only for the interacted viewer
+            if is_this_viewer {
+                if let Some(pos) = pointer.interact_pos() {
+                    if pointer.any_pressed() && self.crop_drag.is_none() && img_rect.contains(pos) {
+                        let corners = corner_rects(crop_screen);
+                        let mut target = None;
+                        for (i, cr) in corners.iter().enumerate() {
+                            if cr.contains(pos) {
+                                target = Some(DragTarget::Corner(i as u8));
+                                break;
+                            }
                         }
-                    }
-                    if target.is_none() && crop_screen.contains(pos) {
-                        target = Some(DragTarget::Interior);
-                    }
+                        if target.is_none() && crop_screen.contains(pos) {
+                            target = Some(DragTarget::Interior);
+                        }
 
-                    if let Some(t) = target {
-                        // Auto-promote applied crop to pending on grab
-                        if !has_pending {
-                            self.pending_crop = self.edit_state.crop.clone();
-                        }
-                        self.crop_drag = Some(t);
-                        if matches!(t, DragTarget::Interior) {
-                            self.crop_drag_start_pos = Some(screen_to_norm_pos(pos, img_rect));
-                            self.crop_drag_start_rect = self.pending_crop.clone();
+                        if let Some(t) = target {
+                            // Auto-promote applied crop to pending on grab
+                            if !has_pending {
+                                self.pending_crop = self.edit_state.crop.clone();
+                            }
+                            self.crop_drag = Some(t);
+                            if matches!(t, DragTarget::Interior) {
+                                self.crop_drag_start_pos = Some(screen_to_norm_pos(pos, img_rect));
+                                self.crop_drag_start_rect = self.pending_crop.clone();
+                            }
                         }
                     }
                 }
@@ -696,10 +796,9 @@ impl Viewer {
                     self.crop_drag_start_rect = None;
                 }
             }
-        } else {
-            // No crop at all — drag to create a new pending one
-            let resp = ui.interact(img_rect, ui.id().with("crop_create"), egui::Sense::drag());
-            if resp.drag_started() {
+        } else if is_this_viewer {
+            // No crop at all — drag to create a new pending one (only for this viewer)
+            if crop_resp.drag_started() {
                 if let Some(origin) = pointer.interact_pos() {
                     let n = screen_to_norm_pos(origin, img_rect);
                     self.crop_create_origin =
@@ -712,7 +811,7 @@ impl Viewer {
                     });
                 }
             }
-            if resp.dragged() {
+            if crop_resp.dragged() {
                 if let (Some(pos), Some(origin)) = (pointer.interact_pos(), self.crop_create_origin)
                 {
                     if let Some(ref mut crop) = self.pending_crop {
@@ -731,7 +830,7 @@ impl Viewer {
                     }
                 }
             }
-            if resp.drag_stopped() {
+            if crop_resp.drag_stopped() {
                 self.crop_create_origin = None;
                 if let Some(ref crop) = self.pending_crop {
                     if crop.width < 0.01 || crop.height < 0.01 {
@@ -1058,22 +1157,55 @@ fn draw_fitted_image(
     tex: &egui::TextureHandle,
     max_w: f32,
     max_h: f32,
+    zoom: f32,
+    pan_offset: egui::Vec2,
     processing_overlay: bool,
 ) -> egui::Rect {
     let tex_size = tex.size_vec2();
-    let scale = (max_w / tex_size.x).min(max_h / tex_size.y);
-    let display = tex_size * scale;
-    let (img_rect, _) = ui.allocate_exact_size(display, egui::Sense::hover());
-    ui.painter().image(
-        tex.id(),
-        img_rect,
-        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-        egui::Color32::WHITE,
+    let fit_scale = (max_w / tex_size.x).min(max_h / tex_size.y);
+    let fit_size = tex_size * fit_scale;
+
+    // Allocate the fit-sized area (layout stays stable regardless of zoom)
+    let (viewport_rect, _) = ui.allocate_exact_size(fit_size, egui::Sense::hover());
+
+    // The zoomed image rect, centered in the viewport and shifted by pan
+    let zoomed_size = fit_size * zoom;
+    let center = viewport_rect.center() + pan_offset;
+    let img_rect = egui::Rect::from_center_size(center, zoomed_size);
+
+    // Compute UV rect: which portion of the texture is visible within the viewport
+    // Map viewport edges to UV coordinates relative to img_rect
+    let uv_min_x = (viewport_rect.min.x - img_rect.min.x) / img_rect.width();
+    let uv_min_y = (viewport_rect.min.y - img_rect.min.y) / img_rect.height();
+    let uv_max_x = (viewport_rect.max.x - img_rect.min.x) / img_rect.width();
+    let uv_max_y = (viewport_rect.max.y - img_rect.min.y) / img_rect.height();
+
+    let uv = egui::Rect::from_min_max(
+        egui::pos2(uv_min_x.max(0.0), uv_min_y.max(0.0)),
+        egui::pos2(uv_max_x.min(1.0), uv_max_y.min(1.0)),
     );
+
+    // The screen rect where we actually paint (intersection of img_rect and viewport)
+    let paint_rect = egui::Rect::from_min_max(
+        egui::pos2(
+            viewport_rect.min.x.max(img_rect.min.x),
+            viewport_rect.min.y.max(img_rect.min.y),
+        ),
+        egui::pos2(
+            viewport_rect.max.x.min(img_rect.max.x),
+            viewport_rect.max.y.min(img_rect.max.y),
+        ),
+    );
+
+    ui.painter()
+        .image(tex.id(), paint_rect, uv, egui::Color32::WHITE);
+
     if processing_overlay {
         ui.painter()
-            .rect_filled(img_rect, 0.0, egui::Color32::from_black_alpha(80));
+            .rect_filled(paint_rect, 0.0, egui::Color32::from_black_alpha(80));
     }
+
+    // Return the full img_rect (not clipped) so callers can map coordinates correctly
     img_rect
 }
 
@@ -1382,6 +1514,24 @@ fn show_color_section(
         }
         if state.shadows != 0.0 && ui.small_button("↺").clicked() {
             state.shadows = 0.0;
+            *needs_process = true;
+            *last_slider_change = None;
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Sharpness");
+        let resp = ui.add(
+            egui::Slider::new(&mut state.sharpness, 0.0_f32..=2.0_f32)
+                .fixed_decimals(2)
+                .clamping(egui::SliderClamping::Always),
+        );
+        if resp.changed() {
+            *needs_process = true;
+            *last_slider_change = Some(Instant::now());
+        }
+        if state.sharpness != 0.0 && ui.small_button("↺").clicked() {
+            state.sharpness = 0.0;
             *needs_process = true;
             *last_slider_change = None;
         }
