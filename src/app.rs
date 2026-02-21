@@ -1,7 +1,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-use image::ImageFormat;
+use image::DynamicImage;
+use image::codecs::jpeg::JpegEncoder;
+use image::codecs::png::{
+    CompressionType as PngCompressionType, FilterType as PngFilterType, PngEncoder,
+};
+use image::codecs::webp::WebPEncoder;
+use image::imageops::FilterType;
 
 use crate::{browser::Browser, config::AppConfig, state::EditState, viewer::Viewer};
 
@@ -15,6 +21,15 @@ struct ViewerWindow {
 struct RenderTask {
     source_path: PathBuf,
     edit_state: EditState,
+}
+
+#[derive(Clone, Copy)]
+struct RenderOptions {
+    format: RenderFormat,
+    jpg_quality: u8,
+    png_compression: u8,
+    resize_enabled: bool,
+    resize_long_edge: u32,
 }
 
 enum RenderEvent {
@@ -59,14 +74,6 @@ impl RenderFormat {
             RenderFormat::Webp => "webp",
         }
     }
-
-    fn image_format(self) -> ImageFormat {
-        match self {
-            RenderFormat::Jpg => ImageFormat::Jpeg,
-            RenderFormat::Png => ImageFormat::Png,
-            RenderFormat::Webp => ImageFormat::WebP,
-        }
-    }
 }
 
 pub struct PhotographApp {
@@ -79,6 +86,10 @@ pub struct PhotographApp {
     show_render_window: bool,
     render_output_path: String,
     render_format: RenderFormat,
+    render_jpg_quality: u8,
+    render_png_compression: u8,
+    render_resize_enabled: bool,
+    render_resize_long_edge: u32,
     render_status: String,
     render_in_progress: bool,
     render_total: usize,
@@ -104,6 +115,10 @@ impl PhotographApp {
             show_render_window: false,
             render_output_path: output_dir.display().to_string(),
             render_format: RenderFormat::Jpg,
+            render_jpg_quality: 90,
+            render_png_compression: 6,
+            render_resize_enabled: false,
+            render_resize_long_edge: 3000,
             render_status: String::new(),
             render_in_progress: false,
             render_total: 0,
@@ -134,6 +149,10 @@ impl PhotographApp {
             self.render_status = "Output path is empty".to_string();
             return;
         }
+        if self.render_resize_enabled && self.render_resize_long_edge == 0 {
+            self.render_status = "Resize long edge must be greater than 0".to_string();
+            return;
+        }
         let tasks = self.build_render_tasks();
         if tasks.is_empty() {
             self.render_status = "No open images to render".to_string();
@@ -141,7 +160,13 @@ impl PhotographApp {
         }
 
         let total = tasks.len();
-        let format = self.render_format;
+        let options = RenderOptions {
+            format: self.render_format,
+            jpg_quality: self.render_jpg_quality.clamp(1, 100),
+            png_compression: self.render_png_compression.min(9),
+            resize_enabled: self.render_resize_enabled,
+            resize_long_edge: self.render_resize_long_edge.max(1),
+        };
         let output_dir_for_thread = output_dir.clone();
         let (tx, rx) = mpsc::channel();
         let ctx2 = ctx.clone();
@@ -162,7 +187,7 @@ impl PhotographApp {
                     &task.source_path,
                     &task.edit_state,
                     &output_dir_for_thread,
-                    format,
+                    options,
                 ) {
                     failed += 1;
                     if first_error.is_none() {
@@ -297,13 +322,14 @@ fn render_single_image(
     source_path: &Path,
     state: &EditState,
     output_dir: &Path,
-    format: RenderFormat,
+    options: RenderOptions,
 ) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(output_dir)?;
     let input = crate::thumbnail::open_image(source_path)?;
-    let rendered = crate::processing::transform::apply(&input, state);
-    let output_path = build_output_path(source_path, output_dir, format);
-    rendered.save_with_format(&output_path, format.image_format())?;
+    let processed = crate::processing::transform::apply(&input, state);
+    let rendered = apply_export_resize(processed, options);
+    let output_path = build_output_path(source_path, output_dir, options.format);
+    write_rendered_image(&rendered, &output_path, options)?;
     Ok(output_path)
 }
 
@@ -323,6 +349,78 @@ fn build_output_path(source_path: &Path, output_dir: &Path, format: RenderFormat
         }
     }
     output_dir.join(format!("{}-final.{}", stem, format.extension()))
+}
+
+fn apply_export_resize(img: DynamicImage, options: RenderOptions) -> DynamicImage {
+    if !options.resize_enabled {
+        return img;
+    }
+    let Some((new_w, new_h)) =
+        resized_dimensions(img.width(), img.height(), options.resize_long_edge)
+    else {
+        return img;
+    };
+    img.resize_exact(new_w, new_h, FilterType::Lanczos3)
+}
+
+fn resized_dimensions(width: u32, height: u32, max_long_edge: u32) -> Option<(u32, u32)> {
+    if width == 0 || height == 0 || max_long_edge == 0 {
+        return None;
+    }
+    let long = width.max(height);
+    if long <= max_long_edge {
+        return None;
+    }
+    let scale = max_long_edge as f32 / long as f32;
+    let new_w = ((width as f32 * scale).round() as u32).max(1);
+    let new_h = ((height as f32 * scale).round() as u32).max(1);
+    Some((new_w, new_h))
+}
+
+fn write_rendered_image(
+    rendered: &DynamicImage,
+    output_path: &Path,
+    options: RenderOptions,
+) -> anyhow::Result<()> {
+    let file = std::fs::File::create(output_path)?;
+    let writer = std::io::BufWriter::new(file);
+    match options.format {
+        RenderFormat::Jpg => {
+            let encoder = JpegEncoder::new_with_quality(writer, options.jpg_quality.clamp(1, 100));
+            rendered.write_with_encoder(encoder)?;
+        }
+        RenderFormat::Png => {
+            let compression = PngCompressionType::Level(options.png_compression.min(9));
+            let encoder =
+                PngEncoder::new_with_quality(writer, compression, PngFilterType::Adaptive);
+            rendered.write_with_encoder(encoder)?;
+        }
+        RenderFormat::Webp => {
+            let encoder = WebPEncoder::new_lossless(writer);
+            rendered.write_with_encoder(encoder)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resized_dimensions;
+
+    #[test]
+    fn resized_dimensions_skips_when_already_within_limit() {
+        assert_eq!(resized_dimensions(1600, 900, 2000), None);
+    }
+
+    #[test]
+    fn resized_dimensions_scales_landscape_preserving_aspect() {
+        assert_eq!(resized_dimensions(6000, 4000, 3000), Some((3000, 2000)));
+    }
+
+    #[test]
+    fn resized_dimensions_scales_portrait_preserving_aspect() {
+        assert_eq!(resized_dimensions(3000, 6000, 2400), Some((1200, 2400)));
+    }
 }
 
 impl eframe::App for PhotographApp {
@@ -398,7 +496,7 @@ impl eframe::App for PhotographApp {
             let mut show_render_window = self.show_render_window;
             egui::Window::new("Render")
                 .open(&mut show_render_window)
-                .default_size([520.0, 260.0])
+                .default_size([560.0, 360.0])
                 .default_pos([40.0, 70.0])
                 .show(ctx, |ui| {
                     ui.label("Output Directory");
@@ -413,13 +511,53 @@ impl eframe::App for PhotographApp {
                         .selected_text(self.render_format.label())
                         .show_ui(ui, |ui| {
                             for fmt in RenderFormat::ALL {
-                                ui.selectable_value(
-                                    &mut self.render_format,
-                                    fmt,
-                                    fmt.label(),
-                                );
+                                ui.selectable_value(&mut self.render_format, fmt, fmt.label());
                             }
                         });
+
+                    ui.add_space(8.0);
+                    match self.render_format {
+                        RenderFormat::Jpg => {
+                            ui.horizontal(|ui| {
+                                ui.label("JPEG Quality");
+                                ui.add(
+                                    egui::Slider::new(&mut self.render_jpg_quality, 1_u8..=100_u8)
+                                        .clamping(egui::SliderClamping::Always),
+                                );
+                            });
+                        }
+                        RenderFormat::Png => {
+                            ui.horizontal(|ui| {
+                                ui.label("PNG Compression");
+                                ui.add(
+                                    egui::Slider::new(
+                                        &mut self.render_png_compression,
+                                        0_u8..=9_u8,
+                                    )
+                                    .clamping(egui::SliderClamping::Always),
+                                );
+                            });
+                        }
+                        RenderFormat::Webp => {
+                            ui.label(
+                                egui::RichText::new("WebP export is currently lossless").weak(),
+                            );
+                        }
+                    }
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.render_resize_enabled, "Resize on export");
+                        if self.render_resize_enabled {
+                            ui.label("Long edge");
+                            ui.add(
+                                egui::DragValue::new(&mut self.render_resize_long_edge)
+                                    .speed(10)
+                                    .range(128_u32..=10000_u32),
+                            );
+                            ui.label("px");
+                        }
+                    });
 
                     ui.add_space(8.0);
                     let label = if self.render_in_progress {
@@ -533,9 +671,7 @@ impl eframe::App for PhotographApp {
                         .fixed_pos(egui::pos2(x, y))
                         .fixed_size(egui::vec2(TOOLS_WIDTH, height));
                 } else {
-                    window = window
-                        .fixed_pos([620.0, 64.0])
-                        .fixed_size([320.0, 700.0]);
+                    window = window.fixed_pos([620.0, 64.0]).fixed_size([320.0, 700.0]);
                 }
 
                 window.show(ctx, |ui| {

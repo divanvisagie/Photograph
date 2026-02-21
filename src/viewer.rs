@@ -1324,13 +1324,13 @@ fn show_color_section(
 
 fn selective_base_color(idx: usize) -> egui::Color32 {
     match idx {
-        0 => egui::Color32::from_rgb(220, 64, 64),  // Red
-        1 => egui::Color32::from_rgb(226, 140, 55), // Orange
-        2 => egui::Color32::from_rgb(224, 197, 67), // Yellow
-        3 => egui::Color32::from_rgb(74, 170, 86),  // Green
-        4 => egui::Color32::from_rgb(70, 176, 195), // Cyan
-        5 => egui::Color32::from_rgb(72, 120, 220), // Blue
-        6 => egui::Color32::from_rgb(145, 98, 208), // Purple
+        0 => egui::Color32::from_rgb(220, 64, 64),   // Red
+        1 => egui::Color32::from_rgb(226, 140, 55),  // Orange
+        2 => egui::Color32::from_rgb(224, 197, 67),  // Yellow
+        3 => egui::Color32::from_rgb(74, 170, 86),   // Green
+        4 => egui::Color32::from_rgb(70, 176, 195),  // Cyan
+        5 => egui::Color32::from_rgb(72, 120, 220),  // Blue
+        6 => egui::Color32::from_rgb(145, 98, 208),  // Purple
         7 => egui::Color32::from_rgb(216, 102, 168), // Pink
         _ => egui::Color32::GRAY,
     }
@@ -1341,8 +1341,7 @@ fn selective_bg_color(base: egui::Color32) -> egui::Color32 {
 }
 
 fn selective_label_color(base: egui::Color32) -> egui::Color32 {
-    let luminance =
-        0.2126 * base.r() as f32 + 0.7152 * base.g() as f32 + 0.0722 * base.b() as f32;
+    let luminance = 0.2126 * base.r() as f32 + 0.7152 * base.g() as f32 + 0.0722 * base.b() as f32;
     if luminance > 160.0 {
         egui::Color32::BLACK
     } else {
