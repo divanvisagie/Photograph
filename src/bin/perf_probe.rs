@@ -124,8 +124,7 @@ fn main() -> Result<()> {
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(20);
     let backend = ProbeBackend::from_arg(args.next().as_deref());
-    let gpu_available = matches!(backend, ProbeBackend::Auto | ProbeBackend::GpuSpike)
-        && processing::gpu_spike::is_available();
+    let gpu_status = processing::gpu_spike::runtime_status();
 
     let files = list_raw_files(&dir, count)?;
     if files.is_empty() {
@@ -138,13 +137,26 @@ fn main() -> Result<()> {
         backend.label()
     );
     if matches!(backend, ProbeBackend::Auto | ProbeBackend::GpuSpike) {
+        let adapter_desc = match (
+            gpu_status.adapter_name.as_deref(),
+            gpu_status.adapter_backend.as_deref(),
+        ) {
+            (Some(name), Some(api)) => format!("{} ({})", name, api),
+            (Some(name), None) => name.to_string(),
+            _ => "n/a".to_string(),
+        };
         eprintln!(
-            "gpu_spike availability: {}",
-            if gpu_available {
+            "gpu_spike availability: {}{}",
+            if gpu_status.available {
                 "available"
             } else {
                 "unavailable (cpu fallback)"
-            }
+            },
+            if gpu_status.available {
+                format!(", adapter={}", adapter_desc)
+            } else {
+                String::new()
+            },
         );
     }
 

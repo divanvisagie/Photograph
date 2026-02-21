@@ -16,10 +16,21 @@ struct GpuContext {
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
+    adapter_name: String,
+    adapter_backend: String,
+    adapter_driver: String,
 }
 
 static GPU_CONTEXT: OnceLock<Option<GpuContext>> = OnceLock::new();
 static GPU_FALLBACK_REPORTED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Debug, Default)]
+pub struct RuntimeStatus {
+    pub available: bool,
+    pub adapter_name: Option<String>,
+    pub adapter_backend: Option<String>,
+    pub adapter_driver: Option<String>,
+}
 
 /// Try a GPU compute path for preview-safe color operations.
 ///
@@ -47,6 +58,18 @@ pub fn try_apply(img: &DynamicImage, state: &EditState) -> Option<DynamicImage> 
 
 pub fn is_available() -> bool {
     gpu_context().is_some()
+}
+
+pub fn runtime_status() -> RuntimeStatus {
+    match gpu_context() {
+        Some(ctx) => RuntimeStatus {
+            available: true,
+            adapter_name: Some(ctx.adapter_name.clone()),
+            adapter_backend: Some(ctx.adapter_backend.clone()),
+            adapter_driver: Some(ctx.adapter_driver.clone()),
+        },
+        None => RuntimeStatus::default(),
+    }
 }
 
 fn is_gpu_state_supported(state: &EditState) -> bool {
@@ -284,6 +307,14 @@ fn init_gpu_context() -> Option<GpuContext> {
         force_fallback_adapter: false,
         compatible_surface: None,
     }))?;
+    let adapter_info = adapter.get_info();
+    let adapter_name = adapter_info.name;
+    let adapter_backend = adapter_info.backend.to_string();
+    let adapter_driver = if adapter_info.driver.trim().is_empty() {
+        "unknown".to_string()
+    } else {
+        adapter_info.driver
+    };
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: Some("gpu_spike_device"),
@@ -354,6 +385,9 @@ fn init_gpu_context() -> Option<GpuContext> {
         queue,
         pipeline,
         bind_group_layout,
+        adapter_name,
+        adapter_backend,
+        adapter_driver,
     })
 }
 

@@ -120,6 +120,8 @@ impl RenderSpeedProfile {
 pub struct PhotographApp {
     browser: Browser,
     preview_backend: PreviewBackend,
+    preview_status_label: String,
+    preview_status_details: Option<String>,
     viewers: Vec<ViewerWindow>,
     active_viewer: Option<usize>,
     next_id: usize,
@@ -152,9 +154,13 @@ impl PhotographApp {
     ) -> Self {
         let browser = Browser::new(config.browse_path.clone());
         let output_dir = default_render_dir();
+        let (preview_status_label, preview_status_details) =
+            preview_status_summary(preview_backend);
         Self {
             browser,
             preview_backend,
+            preview_status_label,
+            preview_status_details,
             viewers: Vec::new(),
             active_viewer: None,
             next_id: 0,
@@ -660,6 +666,16 @@ impl eframe::App for PhotographApp {
                 if ui.button("Render").clicked() {
                     self.show_render_window = true;
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let response = ui.label(
+                        egui::RichText::new(&self.preview_status_label)
+                            .weak()
+                            .monospace(),
+                    );
+                    if let Some(details) = &self.preview_status_details {
+                        response.on_hover_text(details);
+                    }
+                });
             });
         });
         let content_rect = ctx.available_rect();
@@ -888,5 +904,59 @@ impl eframe::App for PhotographApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.config.browse_path = Some(self.browser.current_dir.clone());
         self.config.save();
+    }
+}
+
+fn preview_status_summary(backend: PreviewBackend) -> (String, Option<String>) {
+    let status = crate::processing::gpu_spike::runtime_status();
+    let adapter_desc = match (
+        status.adapter_name.as_deref(),
+        status.adapter_backend.as_deref(),
+    ) {
+        (Some(name), Some(api)) => format!("{} ({})", name, api),
+        (Some(name), None) => name.to_string(),
+        _ => "n/a".to_string(),
+    };
+    let driver = status
+        .adapter_driver
+        .unwrap_or_else(|| "unknown".to_string());
+
+    match backend {
+        PreviewBackend::Cpu => (
+            "GPU accel: off (cpu mode)".to_string(),
+            Some("Preview backend forced to CPU; GPU acceleration is disabled.".to_string()),
+        ),
+        PreviewBackend::Auto => {
+            if status.available {
+                (
+                    format!("GPU accel: on [{}]", adapter_desc),
+                    Some(format!("auto mode active; driver: {}", driver)),
+                )
+            } else {
+                (
+                    "GPU accel: off (auto fallback)".to_string(),
+                    Some(
+                        "auto mode selected, but no usable GPU backend was initialized."
+                            .to_string(),
+                    ),
+                )
+            }
+        }
+        PreviewBackend::GpuSpike => {
+            if status.available {
+                (
+                    format!("GPU accel: on [{}]", adapter_desc),
+                    Some(format!("gpu_spike mode active; driver: {}", driver)),
+                )
+            } else {
+                (
+                    "GPU accel: off (gpu fallback)".to_string(),
+                    Some(
+                        "gpu_spike requested, but GPU init failed; running CPU fallback."
+                            .to_string(),
+                    ),
+                )
+            }
+        }
     }
 }

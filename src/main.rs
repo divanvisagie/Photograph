@@ -32,20 +32,32 @@ fn resolve_preview_backend(config: &AppConfig) -> PreviewBackend {
 }
 
 fn report_preview_backend(backend: PreviewBackend) {
+    let status = processing::gpu_spike::runtime_status();
+    let adapter_desc = match (
+        status.adapter_name.as_deref(),
+        status.adapter_backend.as_deref(),
+    ) {
+        (Some(name), Some(api)) => format!("{} ({})", name, api),
+        (Some(name), None) => name.to_string(),
+        _ => "n/a".to_string(),
+    };
     match backend {
         PreviewBackend::Cpu => {
             eprintln!("photograph: preview backend = cpu (forced)");
         }
         PreviewBackend::Auto => {
-            if processing::gpu_spike::is_available() {
-                eprintln!("photograph: preview backend = auto (gpu_spike active when supported)");
+            if status.available {
+                eprintln!(
+                    "photograph: preview backend = auto (gpu_spike active on {})",
+                    adapter_desc
+                );
             } else {
                 eprintln!("photograph: preview backend = auto (gpu unavailable; cpu fallback)");
             }
         }
         PreviewBackend::GpuSpike => {
-            if processing::gpu_spike::is_available() {
-                eprintln!("photograph: preview backend = gpu_spike");
+            if status.available {
+                eprintln!("photograph: preview backend = gpu_spike ({})", adapter_desc);
             } else {
                 eprintln!(
                     "photograph: preview backend = gpu_spike requested, cpu fallback engaged"
