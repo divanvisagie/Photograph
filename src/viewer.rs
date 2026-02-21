@@ -140,11 +140,15 @@ pub struct Viewer {
     zoom: f32,
     pan_offset: egui::Vec2,
     loading: bool,
+    /// Background reload for higher-res preview (doesn't show spinner).
+    reloading_preview: bool,
     processing: bool,
     requested_generation: u64,
     in_flight_generation: Option<u64>,
     pub metadata: Option<crate::metadata::ImageMetadata>,
     source_signature: u64,
+    preview_max: u32,
+    last_zoom_change: Option<Instant>,
     preview_cache: HashMap<PreviewCacheKey, PreviewCacheEntry>,
     preview_cache_lru: VecDeque<PreviewCacheKey>,
     tx: mpsc::SyncSender<BgResult>,
@@ -177,11 +181,14 @@ impl Viewer {
             zoom: 1.0,
             pan_offset: egui::Vec2::ZERO,
             loading: false,
+            reloading_preview: false,
             processing: false,
             requested_generation: 0,
             in_flight_generation: None,
             metadata: None,
             source_signature: 0,
+            preview_max: PREVIEW_MAX,
+            last_zoom_change: None,
             preview_cache: HashMap::new(),
             preview_cache_lru: VecDeque::new(),
             tx,
@@ -221,6 +228,7 @@ impl Viewer {
         self.last_slider_change = None;
         self.last_interactive_process = None;
         self.loading = true;
+        self.reloading_preview = false;
         self.processing = false;
         // Invalidate any in-flight processing result from the previous image.
         self.requested_generation = self.requested_generation.wrapping_add(1);
@@ -231,15 +239,18 @@ impl Viewer {
         self.crop_create_origin = None;
         self.zoom = 1.0;
         self.pan_offset = egui::Vec2::ZERO;
+        self.preview_max = PREVIEW_MAX;
+        self.last_zoom_change = None;
         self.metadata = crate::metadata::read(&path).ok();
 
         let tx = self.tx.clone();
         let ctx2 = ctx.clone();
+        let cap = self.preview_max;
         std::thread::spawn(move || {
             match crate::thumbnail::open_image_for_preview(&path) {
                 Ok(img) => {
-                    let preview = if img.width() > PREVIEW_MAX || img.height() > PREVIEW_MAX {
-                        img.thumbnail(PREVIEW_MAX, PREVIEW_MAX)
+                    let preview = if img.width() > cap || img.height() > cap {
+                        img.thumbnail(cap, cap)
                     } else {
                         img
                     };
@@ -384,6 +395,7 @@ impl Viewer {
                     if self.current_path.as_ref() == Some(&path) {
                         self.preview = Some(img);
                         self.loading = false;
+                        self.reloading_preview = false;
                         self.needs_process = true;
                         self.needs_final_process = false;
                         self.last_interactive_process = None;
@@ -392,6 +404,7 @@ impl Viewer {
                 BgResult::LoadFailed(path) => {
                     if self.current_path.as_ref() == Some(&path) {
                         self.loading = false;
+                        self.reloading_preview = false;
                     }
                 }
                 BgResult::Processed {
@@ -483,6 +496,62 @@ impl Viewer {
             }
         }
 
+        // Adaptive preview reload: when zoomed in, load a higher-resolution preview
+        if let Some(zoom_changed_at) = self.last_zoom_change {
+            let elapsed = zoom_changed_at.elapsed();
+            if elapsed >= DEBOUNCE {
+                // Compute needed resolution based on zoom level
+                let needed_max =
+                    ((PREVIEW_MAX as f32 * self.zoom).ceil() as u32).max(PREVIEW_MAX);
+                // Cap at original image dimensions
+                let orig_max = self
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| match (m.width, m.height) {
+                        (Some(w), Some(h)) => Some(w.max(h)),
+                        _ => None,
+                    })
+                    .unwrap_or(u32::MAX);
+                let needed_max = needed_max.min(orig_max);
+
+                if needed_max > self.preview_max && !self.loading && !self.reloading_preview {
+                    self.preview_max = needed_max;
+                    self.reloading_preview = true;
+                    self.last_zoom_change = None;
+                    // Invalidate in-flight processing so stale results are discarded
+                    self.requested_generation = self.requested_generation.wrapping_add(1);
+                    self.in_flight_generation = None;
+
+                    let tx = self.tx.clone();
+                    let ctx2 = ui.ctx().clone();
+                    let path = self.current_path.clone().unwrap();
+                    let cap = self.preview_max;
+                    std::thread::spawn(move || {
+                        match crate::thumbnail::open_image_for_preview(&path) {
+                            Ok(img) => {
+                                let preview = if img.width() > cap || img.height() > cap {
+                                    img.thumbnail(cap, cap)
+                                } else {
+                                    img
+                                };
+                                let _ = tx.send(BgResult::Loaded { path, img: preview });
+                            }
+                            Err(_) => {
+                                let _ = tx.send(BgResult::LoadFailed(path));
+                            }
+                        }
+                        ctx2.request_repaint();
+                    });
+                } else {
+                    self.last_zoom_change = None;
+                }
+            } else {
+                // Still waiting for debounce — schedule a repaint
+                ui.ctx()
+                    .request_repaint_after(DEBOUNCE.saturating_sub(elapsed));
+            }
+        }
+
         // Toolbar row
         ui.horizontal(|ui| {
             if ui.selectable_label(self.split_view, "Split view").clicked() {
@@ -504,6 +573,12 @@ impl Viewer {
                     self.crop_drag = None;
                     self.crop_create_origin = None;
                 }
+            }
+
+            if self.processing || self.reloading_preview {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spinner();
+                });
             }
         });
 
@@ -567,7 +642,6 @@ impl Viewer {
         }
 
         let loading = self.loading;
-        let processing = self.processing;
         let texture = self.texture.clone();
         let original_texture = self.original_texture.clone();
         let split = self.split_view;
@@ -575,11 +649,10 @@ impl Viewer {
         let avail_w = ui.available_width();
         let img_max_h = ui.available_height().max(180.0);
 
-        if loading || (processing && texture.is_none()) {
-            ui.allocate_ui(egui::vec2(avail_w, img_max_h), |ui| {
-                ui.centered_and_justified(|ui| {
-                    ui.spinner();
-                });
+        if loading || (self.processing && texture.is_none()) {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.weak("Loading...");
             });
         } else if let Some(ref tex) = texture {
             if split {
@@ -593,7 +666,6 @@ impl Viewer {
                             img_max_h,
                             1.0,
                             egui::Vec2::ZERO,
-                            false,
                         );
                     } else {
                         ui.allocate_ui(egui::vec2(half_w, img_max_h), |ui| {
@@ -609,7 +681,6 @@ impl Viewer {
                         img_max_h,
                         1.0,
                         egui::Vec2::ZERO,
-                        processing,
                     );
                 });
             } else {
@@ -622,10 +693,10 @@ impl Viewer {
                         img_max_h,
                         1.0,
                         egui::Vec2::ZERO,
-                        processing,
                     );
                     self.handle_crop_interaction(ui, img_rect);
                 } else {
+                    let zoom_before = self.zoom;
                     let img_rect = draw_fitted_image(
                         ui,
                         tex,
@@ -633,7 +704,6 @@ impl Viewer {
                         img_max_h,
                         self.zoom,
                         self.pan_offset,
-                        processing,
                     );
 
                     // Compute fit_size for clamping
@@ -652,24 +722,32 @@ impl Viewer {
                     };
                     let resp = ui.interact(viewport_rect, ui.id().with("zoom_pan"), sense);
 
-                    // Scroll-to-zoom (only when this widget is hovered)
+                    // Scroll-to-zoom and pinch-to-zoom (only when hovered)
                     if resp.hovered() {
+                        // Mouse wheel zoom
                         let scroll_delta = ui.input(|i| i.raw_scroll_delta.y);
-                        if scroll_delta != 0.0 {
-                            let old_zoom = self.zoom;
-                            let new_zoom =
-                                (self.zoom * (1.1_f32).powf(scroll_delta / 50.0)).clamp(1.0, 10.0);
-                            if new_zoom != old_zoom {
-                                // Zoom toward cursor
-                                if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                                    let img_center = viewport_rect.center();
-                                    let rel = cursor_pos.to_vec2()
-                                        - img_center.to_vec2()
-                                        - self.pan_offset;
-                                    self.pan_offset += rel * (1.0 - new_zoom / old_zoom);
-                                }
-                                self.zoom = new_zoom;
+                        // Trackpad pinch zoom (egui reports as a multiplier, e.g. 1.02)
+                        let pinch_delta = ui.input(|i| i.zoom_delta());
+
+                        let old_zoom = self.zoom;
+                        let new_zoom = if scroll_delta != 0.0 {
+                            (self.zoom * (1.1_f32).powf(scroll_delta / 50.0)).clamp(1.0, 10.0)
+                        } else if (pinch_delta - 1.0).abs() > 0.001 {
+                            (self.zoom * pinch_delta).clamp(1.0, 10.0)
+                        } else {
+                            old_zoom
+                        };
+
+                        if new_zoom != old_zoom {
+                            // Zoom toward cursor
+                            if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                                let img_center = viewport_rect.center();
+                                let rel = cursor_pos.to_vec2()
+                                    - img_center.to_vec2()
+                                    - self.pan_offset;
+                                self.pan_offset += rel * (1.0 - new_zoom / old_zoom);
                             }
+                            self.zoom = new_zoom;
                         }
                     }
 
@@ -691,12 +769,85 @@ impl Viewer {
                     let max_pan_y = ((zoomed_size.y - fit_size.y) / 2.0).max(0.0);
                     self.pan_offset.x = self.pan_offset.x.clamp(-max_pan_x, max_pan_x);
                     self.pan_offset.y = self.pan_offset.y.clamp(-max_pan_y, max_pan_y);
+
+                    // Track zoom changes for adaptive preview reload
+                    if (self.zoom - zoom_before).abs() > 0.001 {
+                        self.last_zoom_change = Some(Instant::now());
+                    }
                 }
             }
         } else {
             ui.allocate_ui(egui::vec2(avail_w, 40.0), |ui| {
                 ui.label("Could not open image");
             });
+        }
+
+        // Bottom status bar: resolution + zoom control
+        let zoom_before_bar = self.zoom;
+        ui.horizontal(|ui| {
+            // Preview resolution (from texture) / Original resolution (from EXIF)
+            if let Some(ref tex) = texture {
+                let size = tex.size();
+                let preview_res = format!("{}x{}", size[0], size[1]);
+                let orig_res = self
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| match (m.width, m.height) {
+                        (Some(w), Some(h)) => Some(format!("{}x{}", w, h)),
+                        _ => None,
+                    });
+                if let Some(orig) = orig_res {
+                    ui.weak(format!("{} / {}", preview_res, orig));
+                } else {
+                    ui.weak(preview_res);
+                }
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !self.crop_mode {
+                    // Zoom presets menu
+                    let zoom_label = if (self.zoom - 1.0).abs() < 0.01 {
+                        "Fit".to_string()
+                    } else {
+                        format!("{:.0}%", self.zoom * 100.0)
+                    };
+                    egui::ComboBox::from_id_salt(ui.id().with("zoom_combo"))
+                        .selected_text(&zoom_label)
+                        .width(60.0)
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label((self.zoom - 1.0).abs() < 0.01, "Fit").clicked() {
+                                self.zoom = 1.0;
+                                self.pan_offset = egui::Vec2::ZERO;
+                            }
+                            for &pct in &[200, 300, 500, 1000] {
+                                let z = pct as f32 / 100.0;
+                                let label = format!("{}%", pct);
+                                if ui.selectable_label((self.zoom - z).abs() < 0.01, label).clicked() {
+                                    self.pan_offset = egui::Vec2::ZERO;
+                                    self.zoom = z;
+                                }
+                            }
+                        });
+
+                    // +/- buttons
+                    if ui.small_button("+").clicked() {
+                        self.zoom = (self.zoom * 1.25).clamp(1.0, 10.0);
+                    }
+                    if ui.small_button("\u{2212}").clicked() {
+                        let new_zoom = (self.zoom / 1.25).clamp(1.0, 10.0);
+                        if new_zoom < 1.01 {
+                            self.zoom = 1.0;
+                            self.pan_offset = egui::Vec2::ZERO;
+                        } else {
+                            self.zoom = new_zoom;
+                        }
+                    }
+                }
+            });
+        });
+        // Track zoom changes from status bar controls (+/-, presets)
+        if (self.zoom - zoom_before_bar).abs() > 0.001 {
+            self.last_zoom_change = Some(Instant::now());
         }
     }
 
@@ -1159,7 +1310,6 @@ fn draw_fitted_image(
     max_h: f32,
     zoom: f32,
     pan_offset: egui::Vec2,
-    processing_overlay: bool,
 ) -> egui::Rect {
     let tex_size = tex.size_vec2();
     let fit_scale = (max_w / tex_size.x).min(max_h / tex_size.y);
@@ -1199,11 +1349,6 @@ fn draw_fitted_image(
 
     ui.painter()
         .image(tex.id(), paint_rect, uv, egui::Color32::WHITE);
-
-    if processing_overlay {
-        ui.painter()
-            .rect_filled(paint_rect, 0.0, egui::Color32::from_black_alpha(80));
-    }
 
     // Return the full img_rect (not clipped) so callers can map coordinates correctly
     img_rect
