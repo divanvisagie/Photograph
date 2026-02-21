@@ -89,6 +89,29 @@ impl RenderFormat {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RenderSpeedProfile {
+    Quality,
+    Balanced,
+    Speed,
+}
+
+impl RenderSpeedProfile {
+    const ALL: [RenderSpeedProfile; 3] = [
+        RenderSpeedProfile::Quality,
+        RenderSpeedProfile::Balanced,
+        RenderSpeedProfile::Speed,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            RenderSpeedProfile::Quality => "Quality",
+            RenderSpeedProfile::Balanced => "Balanced",
+            RenderSpeedProfile::Speed => "Speed",
+        }
+    }
+}
+
 pub struct PhotographApp {
     browser: Browser,
     viewers: Vec<ViewerWindow>,
@@ -99,6 +122,7 @@ pub struct PhotographApp {
     show_render_window: bool,
     render_output_path: String,
     render_format: RenderFormat,
+    render_speed_profile: RenderSpeedProfile,
     render_jpg_quality: u8,
     render_png_compression: u8,
     render_resize_enabled: bool,
@@ -128,6 +152,7 @@ impl PhotographApp {
             show_render_window: false,
             render_output_path: output_dir.display().to_string(),
             render_format: RenderFormat::Jpg,
+            render_speed_profile: RenderSpeedProfile::Balanced,
             render_jpg_quality: 90,
             render_png_compression: 6,
             render_resize_enabled: false,
@@ -154,6 +179,12 @@ impl PhotographApp {
                 })
             })
             .collect()
+    }
+
+    fn apply_render_speed_profile(&mut self) {
+        let (jpg_quality, png_compression) = render_profile_defaults(self.render_speed_profile);
+        self.render_jpg_quality = jpg_quality;
+        self.render_png_compression = png_compression;
     }
 
     fn start_render_job(&mut self, ctx: &egui::Context) {
@@ -461,12 +492,23 @@ fn write_rendered_image(
     Ok(())
 }
 
+fn render_profile_defaults(profile: RenderSpeedProfile) -> (u8, u8) {
+    match profile {
+        RenderSpeedProfile::Quality => (95, 9),
+        RenderSpeedProfile::Balanced => (90, 6),
+        RenderSpeedProfile::Speed => (82, 1),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{RenderFormat, build_output_path, resized_dimensions};
+    use super::{
+        RenderFormat, RenderSpeedProfile, build_output_path, render_profile_defaults,
+        resized_dimensions,
+    };
 
     fn unique_test_dir(name: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now()
@@ -522,6 +564,27 @@ mod tests {
         assert_eq!(next, output_dir.join("IMG_0001-2.jpg"));
 
         let _ = std::fs::remove_dir_all(&output_dir);
+    }
+
+    #[test]
+    fn render_profile_quality_is_high_quality_defaults() {
+        assert_eq!(
+            render_profile_defaults(RenderSpeedProfile::Quality),
+            (95, 9)
+        );
+    }
+
+    #[test]
+    fn render_profile_balanced_matches_current_defaults() {
+        assert_eq!(
+            render_profile_defaults(RenderSpeedProfile::Balanced),
+            (90, 6)
+        );
+    }
+
+    #[test]
+    fn render_profile_speed_prioritizes_throughput() {
+        assert_eq!(render_profile_defaults(RenderSpeedProfile::Speed), (82, 1));
     }
 }
 
@@ -618,6 +681,31 @@ impl eframe::App for PhotographApp {
                         });
 
                     ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Speed profile");
+                        egui::ComboBox::from_id_salt("render_speed_profile")
+                            .selected_text(self.render_speed_profile.label())
+                            .show_ui(ui, |ui| {
+                                for profile in RenderSpeedProfile::ALL {
+                                    ui.selectable_value(
+                                        &mut self.render_speed_profile,
+                                        profile,
+                                        profile.label(),
+                                    );
+                                }
+                            });
+                        if ui.button("Apply preset").clicked() {
+                            self.apply_render_speed_profile();
+                        }
+                    });
+                    ui.label(
+                        egui::RichText::new(
+                            "Presets tune JPEG quality and PNG compression for throughput.",
+                        )
+                        .weak(),
+                    );
+
+                    ui.add_space(8.0);
                     match self.render_format {
                         RenderFormat::Jpg => {
                             ui.horizontal(|ui| {
@@ -642,7 +730,10 @@ impl eframe::App for PhotographApp {
                         }
                         RenderFormat::Webp => {
                             ui.label(
-                                egui::RichText::new("WebP export is currently lossless").weak(),
+                                egui::RichText::new(
+                                    "WebP export is currently lossless (image crate limitation)",
+                                )
+                                .weak(),
                             );
                         }
                     }

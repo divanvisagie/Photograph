@@ -1,5 +1,8 @@
 use std::{
-    path::PathBuf,
+    collections::hash_map::DefaultHasher,
+    collections::{HashMap, VecDeque},
+    hash::{Hash, Hasher},
+    path::{Path, PathBuf},
     sync::mpsc,
     time::{Duration, Instant},
 };
@@ -14,6 +17,7 @@ const PREVIEW_MAX: u32 = 1920;
 const INTERACTIVE_PREVIEW_MAX: u32 = 960;
 const DEBOUNCE: Duration = Duration::from_millis(300);
 const INTERACTIVE_REFRESH: Duration = Duration::from_millis(90);
+const PREVIEW_CACHE_CAPACITY: usize = 24;
 
 /// Size in screen pixels for crop corner drag handles.
 const HANDLE_SIZE: f32 = 8.0;
@@ -26,16 +30,33 @@ enum BgResult {
     LoadFailed(PathBuf),
     Processed {
         generation: u64,
+        cache_key: PreviewCacheKey,
         data: Vec<u8>,
         width: usize,
         height: usize,
     },
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum ProcessQuality {
     Interactive,
     Final,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct PreviewCacheKey {
+    source_signature: u64,
+    edit_signature: u64,
+    input_width: u32,
+    input_height: u32,
+    quality: ProcessQuality,
+}
+
+#[derive(Clone)]
+struct PreviewCacheEntry {
+    data: Vec<u8>,
+    width: usize,
+    height: usize,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -113,6 +134,9 @@ pub struct Viewer {
     requested_generation: u64,
     in_flight_generation: Option<u64>,
     pub metadata: Option<crate::metadata::ImageMetadata>,
+    source_signature: u64,
+    preview_cache: HashMap<PreviewCacheKey, PreviewCacheEntry>,
+    preview_cache_lru: VecDeque<PreviewCacheKey>,
     tx: mpsc::SyncSender<BgResult>,
     rx: mpsc::Receiver<BgResult>,
 }
@@ -144,6 +168,9 @@ impl Viewer {
             requested_generation: 0,
             in_flight_generation: None,
             metadata: None,
+            source_signature: 0,
+            preview_cache: HashMap::new(),
+            preview_cache_lru: VecDeque::new(),
             tx,
             rx,
         }
@@ -171,6 +198,7 @@ impl Viewer {
             return;
         }
         self.current_path = Some(path.clone());
+        self.source_signature = source_signature(&path);
         self.preview = None;
         self.texture = None;
         self.original_texture = None;
@@ -193,7 +221,7 @@ impl Viewer {
         let tx = self.tx.clone();
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
-            match crate::thumbnail::open_image(&path) {
+            match crate::thumbnail::open_image_for_preview(&path) {
                 Ok(img) => {
                     let preview = if img.width() > PREVIEW_MAX || img.height() > PREVIEW_MAX {
                         img.thumbnail(PREVIEW_MAX, PREVIEW_MAX)
@@ -211,7 +239,7 @@ impl Viewer {
     }
 
     fn trigger_process(&mut self, ctx: &egui::Context, quality: ProcessQuality) {
-        let Some(ref preview) = self.preview else {
+        let Some(preview) = self.preview.clone() else {
             return;
         };
         if self.processing {
@@ -233,8 +261,20 @@ impl Viewer {
         self.requested_generation = self.requested_generation.wrapping_add(1);
         let generation = self.requested_generation;
         self.in_flight_generation = Some(generation);
+        let cache_key = self.build_preview_cache_key(&preview, quality);
 
-        let img = preview.clone();
+        if let Some(img) = self.cached_preview_image(&cache_key) {
+            self.texture = Some(ctx.load_texture(
+                format!("viewer_tex_{}", self.id),
+                img,
+                egui::TextureOptions::LINEAR,
+            ));
+            self.processing = false;
+            self.in_flight_generation = None;
+            return;
+        }
+
+        let img = preview;
         let state = self.edit_state.clone();
         let tx = self.tx.clone();
         let ctx2 = ctx.clone();
@@ -249,6 +289,7 @@ impl Viewer {
             let h = rgba.height() as usize;
             let _ = tx.send(BgResult::Processed {
                 generation,
+                cache_key,
                 data: rgba.into_raw(),
                 width: w,
                 height: h,
@@ -264,6 +305,60 @@ impl Viewer {
             self.in_flight_generation,
             &mut self.requested_generation,
         );
+    }
+
+    fn build_preview_cache_key(
+        &self,
+        preview: &DynamicImage,
+        quality: ProcessQuality,
+    ) -> PreviewCacheKey {
+        PreviewCacheKey {
+            source_signature: self.source_signature,
+            edit_signature: edit_state_signature(&self.edit_state),
+            input_width: preview.width(),
+            input_height: preview.height(),
+            quality,
+        }
+    }
+
+    fn cached_preview_image(&mut self, key: &PreviewCacheKey) -> Option<egui::ColorImage> {
+        let img = self.preview_cache.get(key).map(|entry| {
+            egui::ColorImage::from_rgba_unmultiplied([entry.width, entry.height], &entry.data)
+        })?;
+        self.touch_preview_cache_key(key);
+        Some(img)
+    }
+
+    fn store_preview_cache(
+        &mut self,
+        key: PreviewCacheKey,
+        data: Vec<u8>,
+        width: usize,
+        height: usize,
+    ) {
+        if !self.preview_cache.contains_key(&key)
+            && self.preview_cache.len() >= PREVIEW_CACHE_CAPACITY
+        {
+            if let Some(oldest) = self.preview_cache_lru.pop_front() {
+                self.preview_cache.remove(&oldest);
+            }
+        }
+        self.preview_cache.insert(
+            key.clone(),
+            PreviewCacheEntry {
+                data,
+                width,
+                height,
+            },
+        );
+        self.touch_preview_cache_key(&key);
+    }
+
+    fn touch_preview_cache_key(&mut self, key: &PreviewCacheKey) {
+        if let Some(idx) = self.preview_cache_lru.iter().position(|k| k == key) {
+            let _ = self.preview_cache_lru.remove(idx);
+        }
+        self.preview_cache_lru.push_back(key.clone());
     }
 
     pub fn drain(&mut self, ctx: &egui::Context) {
@@ -285,12 +380,14 @@ impl Viewer {
                 }
                 BgResult::Processed {
                     generation,
+                    cache_key,
                     data,
                     width: w,
                     height: h,
                 } => {
                     self.processing = false;
                     self.in_flight_generation = None;
+                    self.store_preview_cache(cache_key, data.clone(), w, h);
                     if generation != self.requested_generation {
                         continue;
                     }
@@ -787,6 +884,33 @@ fn downscale_for_interactive(img: DynamicImage) -> DynamicImage {
         img.thumbnail(INTERACTIVE_PREVIEW_MAX, INTERACTIVE_PREVIEW_MAX)
     } else {
         img
+    }
+}
+
+fn source_signature(path: &Path) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    path.to_string_lossy().hash(&mut hasher);
+    if let Ok(meta) = std::fs::metadata(path) {
+        meta.len().hash(&mut hasher);
+        let modified_nanos = meta
+            .modified()
+            .ok()
+            .and_then(|ts| ts.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        modified_nanos.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn edit_state_signature(state: &EditState) -> u64 {
+    match serde_json::to_vec(state) {
+        Ok(bytes) => {
+            let mut hasher = DefaultHasher::new();
+            bytes.hash(&mut hasher);
+            hasher.finish()
+        }
+        Err(_) => 0,
     }
 }
 
@@ -1496,11 +1620,13 @@ fn show_exif(ui: &mut egui::Ui, meta: &crate::metadata::ImageMetadata) {
 #[cfg(test)]
 mod tests {
     use image::{DynamicImage, ImageBuffer, Rgba};
+    use std::path::Path;
 
     use super::{
         INTERACTIVE_PREVIEW_MAX, bump_requested_generation_for_pending_changes,
-        downscale_for_interactive,
+        downscale_for_interactive, edit_state_signature, source_signature,
     };
+    use crate::state::EditState;
 
     #[test]
     fn bumps_generation_when_pending_changes_arrive_during_processing() {
@@ -1546,5 +1672,19 @@ mod tests {
         let out = downscale_for_interactive(img);
         assert_eq!(out.width(), INTERACTIVE_PREVIEW_MAX / 2);
         assert_eq!(out.height(), INTERACTIVE_PREVIEW_MAX / 2);
+    }
+
+    #[test]
+    fn edit_state_signature_changes_when_edit_changes() {
+        let base = EditState::default();
+        let mut changed = EditState::default();
+        changed.exposure = 0.5;
+        assert_ne!(edit_state_signature(&base), edit_state_signature(&changed));
+    }
+
+    #[test]
+    fn source_signature_is_stable_for_same_path() {
+        let path = Path::new("/tmp/photograph-nonexistent-raw.raf");
+        assert_eq!(source_signature(path), source_signature(path));
     }
 }

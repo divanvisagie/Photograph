@@ -50,9 +50,48 @@ pub fn open_image(path: &Path) -> anyhow::Result<DynamicImage> {
         .ok_or_else(|| anyhow::anyhow!("raw develop produced invalid image"))
 }
 
+/// Open an image for interactive preview.
+///
+/// For RAW files this prefers embedded preview/thumbnail images when available,
+/// and falls back to full raw develop otherwise.
+pub fn open_image_for_preview(path: &Path) -> anyhow::Result<DynamicImage> {
+    // Fast path: non-RAW images via image crate.
+    if let Ok(img) = image::open(path) {
+        return Ok(img);
+    }
+
+    if !has_extension(path, RAW_EXTS) {
+        return Ok(image::open(path)?);
+    }
+
+    if let Ok(Some(img)) = open_embedded_raw_preview(path) {
+        return Ok(img);
+    }
+
+    open_image(path)
+}
+
+fn open_embedded_raw_preview(path: &Path) -> anyhow::Result<Option<DynamicImage>> {
+    let source = rawler::rawsource::RawSource::new(path)?;
+    let decoder = rawler::get_decoder(&source)?;
+    let params = rawler::decoders::RawDecodeParams::default();
+
+    if let Some(img) = decoder.preview_image(&source, &params)? {
+        return Ok(Some(img));
+    }
+    if let Some(img) = decoder.thumbnail_image(&source, &params)? {
+        return Ok(Some(img));
+    }
+    if let Some(img) = decoder.full_image(&source, &params)? {
+        return Ok(Some(img));
+    }
+
+    Ok(None)
+}
+
 /// Generate a thumbnail for `source` and write it to `dest`.
 pub fn generate(source: &Path, dest: &Path) -> anyhow::Result<()> {
-    let img = open_image(source)?;
+    let img = open_image_for_preview(source)?;
     let thumb = img.thumbnail(THUMB_SIZE, THUMB_SIZE);
     std::fs::create_dir_all(dest.parent().unwrap())?;
     thumb.save(dest)?;
