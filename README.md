@@ -1,5 +1,7 @@
 # Photograph
 
+<img src="packaging/linux/photograph.svg" alt="Photograph logo" width="180" />
+
 Native Rust desktop photo browser/editor for image management and color grading.
 
 Photograph focuses on practical desktop workflows: browsing folders, opening images, applying non-destructive edits, and exporting rendered files.
@@ -79,6 +81,14 @@ PHOTOGRAPH_PREVIEW_BACKEND=cpu cargo run --bin photograph
 ## Packaging
 
 The `Makefile` supports Linux (`.deb`) and macOS (`.app`, optional `.dmg`) packaging.
+
+Icon assets are derived from the SVG source at `packaging/linux/photograph.svg`:
+
+```bash
+make icons
+```
+
+This regenerates the embedded runtime PNG (`assets/photograph-icon-128.png`) and, on macOS, the bundle icon (`packaging/macos/photograph.icns`).
 
 Common targets:
 

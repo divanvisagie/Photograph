@@ -6,6 +6,8 @@ UNAME_S := $(shell uname -s)
 ARCH := $(shell dpkg --print-architecture 2>/dev/null || echo amd64)
 MACOS_APP_NAME := Photograph
 MACOS_BUNDLE_ID ?= com.divanv.photograph
+ICON_SOURCE_SVG := packaging/linux/$(APP_NAME).svg
+RUNTIME_ICON_PNG := assets/$(APP_NAME)-icon-128.png
 
 ifeq ($(UNAME_S),Linux)
 PLATFORM := linux
@@ -35,8 +37,10 @@ MACOS_ICON_NAME := $(APP_NAME).icns
 MACOS_ICON_DST := $(MACOS_RESOURCES_DIR)/$(MACOS_ICON_NAME)
 MACOS_DMG_PATH := $(MACOS_STAGING_DIR)/$(MACOS_APP_NAME)-$(VERSION).dmg
 MACOS_INSTALL_DIR ?= /Applications
+ICON_TMP_DIR := target/icons
+MACOS_ICONSET_DIR := $(ICON_TMP_DIR)/$(APP_NAME).iconset
 
-.PHONY: dev build build-linux build-macos package-macos build-unsupported install install-linux install-macos install-unsupported clean-deb clean-macos
+.PHONY: dev build build-linux build-macos package-macos build-unsupported install install-linux install-macos install-unsupported clean-deb clean-macos clean-icons icons icon-runtime icon-macos
 
 dev:
 	@command -v cargo-watch >/dev/null 2>&1 || { echo "cargo-watch is required: cargo install cargo-watch"; exit 1; }
@@ -46,7 +50,67 @@ build: build-$(PLATFORM)
 
 install: install-$(PLATFORM)
 
-build-linux:
+icons: icon-runtime
+ifeq ($(UNAME_S),Darwin)
+icons: icon-macos
+else
+	@echo "macOS icon generation skipped on $(UNAME_S) (run 'make icon-macos' on macOS)."
+endif
+
+icon-runtime:
+	@test -f "$(ICON_SOURCE_SVG)" || { echo "missing icon source: $(ICON_SOURCE_SVG)"; exit 1; }
+	@mkdir -p "$(dir $(RUNTIME_ICON_PNG))"
+	@set -e; \
+	render_png() { \
+		size="$$1"; dest="$$2"; \
+		if command -v rsvg-convert >/dev/null 2>&1; then \
+			rsvg-convert -w "$$size" -h "$$size" "$(ICON_SOURCE_SVG)" -o "$$dest"; \
+		elif command -v inkscape >/dev/null 2>&1; then \
+			inkscape "$(ICON_SOURCE_SVG)" -w "$$size" -h "$$size" --export-filename="$$dest" >/dev/null; \
+		elif command -v magick >/dev/null 2>&1; then \
+			magick -background none "$(ICON_SOURCE_SVG)" -resize "$${size}x$${size}" "$$dest"; \
+		else \
+			echo "need rsvg-convert, inkscape, or magick to rasterize $(ICON_SOURCE_SVG)"; \
+			exit 1; \
+		fi; \
+	}; \
+	render_png 128 "$(RUNTIME_ICON_PNG)"
+	@echo "Generated runtime icon: $(RUNTIME_ICON_PNG)"
+
+icon-macos:
+	@test "$(UNAME_S)" = "Darwin" || { echo "icon-macos must run on macOS (Darwin)."; exit 1; }
+	@command -v iconutil >/dev/null 2>&1 || { echo "iconutil is required on macOS."; exit 1; }
+	@test -f "$(ICON_SOURCE_SVG)" || { echo "missing icon source: $(ICON_SOURCE_SVG)"; exit 1; }
+	@rm -rf "$(MACOS_ICONSET_DIR)"
+	@mkdir -p "$(MACOS_ICONSET_DIR)" "$(dir $(MACOS_ICON_SRC))"
+	@set -e; \
+	render_png() { \
+		size="$$1"; dest="$$2"; \
+		if command -v rsvg-convert >/dev/null 2>&1; then \
+			rsvg-convert -w "$$size" -h "$$size" "$(ICON_SOURCE_SVG)" -o "$$dest"; \
+		elif command -v inkscape >/dev/null 2>&1; then \
+			inkscape "$(ICON_SOURCE_SVG)" -w "$$size" -h "$$size" --export-filename="$$dest" >/dev/null; \
+		elif command -v magick >/dev/null 2>&1; then \
+			magick -background none "$(ICON_SOURCE_SVG)" -resize "$${size}x$${size}" "$$dest"; \
+		else \
+			echo "need rsvg-convert, inkscape, or magick to rasterize $(ICON_SOURCE_SVG)"; \
+			exit 1; \
+		fi; \
+	}; \
+	render_png 16 "$(MACOS_ICONSET_DIR)/icon_16x16.png"; \
+	render_png 32 "$(MACOS_ICONSET_DIR)/icon_16x16@2x.png"; \
+	render_png 32 "$(MACOS_ICONSET_DIR)/icon_32x32.png"; \
+	render_png 64 "$(MACOS_ICONSET_DIR)/icon_32x32@2x.png"; \
+	render_png 128 "$(MACOS_ICONSET_DIR)/icon_128x128.png"; \
+	render_png 256 "$(MACOS_ICONSET_DIR)/icon_128x128@2x.png"; \
+	render_png 256 "$(MACOS_ICONSET_DIR)/icon_256x256.png"; \
+	render_png 512 "$(MACOS_ICONSET_DIR)/icon_256x256@2x.png"; \
+	render_png 512 "$(MACOS_ICONSET_DIR)/icon_512x512.png"; \
+	render_png 1024 "$(MACOS_ICONSET_DIR)/icon_512x512@2x.png"; \
+	iconutil -c icns "$(MACOS_ICONSET_DIR)" -o "$(MACOS_ICON_SRC)"
+	@echo "Generated macOS icon: $(MACOS_ICON_SRC)"
+
+build-linux: icon-runtime
 	@command -v dpkg-deb >/dev/null 2>&1 || { echo "dpkg-deb is required (install dpkg-dev)."; exit 1; }
 	@test -f "$(LINUX_DESKTOP_SRC)" || { echo "missing launcher file: $(LINUX_DESKTOP_SRC)"; exit 1; }
 	@test -f "$(LINUX_ICON_SRC)" || { echo "missing icon file: $(LINUX_ICON_SRC)"; exit 1; }
@@ -82,7 +146,7 @@ install-linux: build-linux
 clean-deb:
 	rm -rf "$(DEB_DIR)"
 
-build-macos:
+build-macos: icon-runtime icon-macos
 	@test "$(UNAME_S)" = "Darwin" || { echo "build-macos must run on macOS (Darwin)."; exit 1; }
 	@test -f "$(MACOS_INFO_PLIST_TEMPLATE)" || { echo "missing plist template: $(MACOS_INFO_PLIST_TEMPLATE)"; exit 1; }
 	cargo build --release --bin $(APP_NAME)
@@ -125,3 +189,6 @@ install-unsupported:
 
 clean-macos:
 	rm -rf "$(MACOS_STAGING_DIR)"
+
+clean-icons:
+	rm -rf "$(ICON_TMP_DIR)"
