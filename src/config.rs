@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
+/// Persisted UI/application settings for Photograph.
 pub struct AppConfig {
     pub window_width: Option<f32>,
     pub window_height: Option<f32>,
@@ -13,10 +14,12 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    /// Returns the user config file path, if a config directory is available.
     pub fn config_path() -> Option<PathBuf> {
         dirs::config_dir().map(|d| d.join("photograph").join("config.toml"))
     }
 
+    /// Loads config from disk, falling back to defaults on any error.
     pub fn load() -> Self {
         let Some(path) = Self::config_path() else {
             return Self::default();
@@ -27,6 +30,7 @@ impl AppConfig {
         toml::from_str(&contents).unwrap_or_default()
     }
 
+    /// Writes config to disk, ignoring filesystem/serialization errors.
     pub fn save(&self) {
         let Some(path) = Self::config_path() else {
             return;

@@ -6,6 +6,7 @@ use crate::state::EditState;
 const SELECTIVE_CENTERS_DEG: [f32; 8] = [0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 285.0, 330.0];
 const SELECTIVE_HALF_WIDTH_DEG: f32 = 30.0;
 
+/// Applies white balance, global HSL, and selective color adjustments.
 pub fn apply(img: DynamicImage, state: &EditState) -> DynamicImage {
     let any_selective = state
         .selective_color

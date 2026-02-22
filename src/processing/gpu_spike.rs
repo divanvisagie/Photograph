@@ -26,6 +26,7 @@ static GPU_CONTEXT: OnceLock<Option<GpuContext>> = OnceLock::new();
 static GPU_FALLBACK_REPORTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Debug, Default)]
+/// Snapshot of GPU preview runtime availability and adapter details.
 pub struct RuntimeStatus {
     pub available: bool,
     pub adapter_vendor_id: Option<u32>,
@@ -58,10 +59,12 @@ pub fn try_apply(img: &DynamicImage, state: &EditState) -> Option<DynamicImage> 
     apply_gpu(&rgba, state).map(DynamicImage::ImageRgba8)
 }
 
+/// Returns whether the experimental GPU preview path is available.
 pub fn is_available() -> bool {
     gpu_context().is_some()
 }
 
+/// Returns detailed GPU runtime status for UI diagnostics.
 pub fn runtime_status() -> RuntimeStatus {
     match gpu_context() {
         Some(ctx) => RuntimeStatus {

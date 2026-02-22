@@ -1,6 +1,7 @@
 use std::path::Path;
 
 #[derive(Debug, Default, Clone)]
+/// EXIF-derived metadata shown for the selected image.
 pub struct ImageMetadata {
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -14,6 +15,7 @@ pub struct ImageMetadata {
     pub date_taken: Option<String>,
 }
 
+/// Reads EXIF metadata from an image file.
 pub fn read(path: &Path) -> anyhow::Result<ImageMetadata> {
     let file = std::fs::File::open(path)?;
     let mut bufreader = std::io::BufReader::new(file);

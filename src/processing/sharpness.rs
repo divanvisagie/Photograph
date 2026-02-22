@@ -3,6 +3,7 @@ use imageproc::filter::gaussian_blur_f32;
 
 use crate::state::EditState;
 
+/// Applies an unsharp-mask style sharpening pass.
 pub fn apply(img: DynamicImage, state: &EditState) -> DynamicImage {
     if state.sharpness < 0.001 {
         return img;

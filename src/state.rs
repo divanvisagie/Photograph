@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Per-hue HSL adjustment used for selective color controls.
 pub struct HslAdjust {
     pub hue: f32,
     pub saturation: f32,
@@ -19,6 +20,7 @@ impl Default for HslAdjust {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Keystone perspective correction parameters.
 pub struct Keystone {
     pub vertical: f32,
     pub horizontal: f32,
@@ -34,6 +36,7 @@ impl Default for Keystone {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Normalized rectangle in image coordinates.
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -42,6 +45,7 @@ pub struct Rect {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Graduated filter parameters applied from top to bottom.
 pub struct GradFilter {
     pub top: f32,
     pub bottom: f32,
@@ -50,6 +54,7 @@ pub struct GradFilter {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+/// Serialized edit parameters stored alongside an image.
 pub struct EditState {
     pub rotate: i32,
     pub flip_h: bool,
@@ -94,12 +99,14 @@ impl Default for EditState {
 }
 
 impl EditState {
+    /// Loads edit state from the image sidecar JSON, if present and valid.
     pub fn load(image_path: &Path) -> Option<Self> {
         let sidecar = sidecar_path(image_path);
         let json = std::fs::read_to_string(sidecar).ok()?;
         serde_json::from_str(&json).ok()
     }
 
+    /// Saves the current edit state to the image sidecar JSON.
     pub fn save(&self, image_path: &Path) -> anyhow::Result<()> {
         let sidecar = sidecar_path(image_path);
         let json = serde_json::to_string_pretty(self)?;

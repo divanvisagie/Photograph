@@ -14,6 +14,7 @@ struct ThumbResult {
     rgba: Option<(Vec<u8>, usize, usize)>,
 }
 
+/// File browser state for directory navigation and thumbnail selection.
 pub struct Browser {
     pub current_dir: PathBuf,
     subdirs: Vec<(PathBuf, String)>,
@@ -27,6 +28,7 @@ pub struct Browser {
 }
 
 impl Browser {
+    /// Creates a browser rooted at `initial_dir` or a reasonable fallback directory.
     pub fn new(initial_dir: Option<PathBuf>) -> Self {
         let dir = initial_dir
             .filter(|p| p.is_dir())

@@ -2,6 +2,7 @@ use image::DynamicImage;
 
 use crate::state::EditState;
 
+/// Applies the graduated exposure filter, if configured.
 pub fn apply(img: DynamicImage, state: &EditState) -> DynamicImage {
     let Some(grad) = state.graduated_filter.as_ref() else {
         return img;

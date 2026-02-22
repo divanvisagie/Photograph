@@ -2,6 +2,7 @@ use image::DynamicImage;
 
 use crate::state::EditState;
 
+/// Applies exposure, contrast, highlights, and shadows adjustments.
 pub fn apply(img: DynamicImage, state: &EditState) -> DynamicImage {
     if state.exposure.abs() < 0.001
         && state.contrast.abs() < 0.001
