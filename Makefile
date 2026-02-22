@@ -8,6 +8,7 @@ MACOS_APP_NAME := Photograph
 MACOS_BUNDLE_ID ?= com.divanv.photograph
 ICON_SOURCE_SVG := packaging/linux/$(APP_NAME).svg
 RUNTIME_ICON_PNG := assets/$(APP_NAME)-icon-128.png
+MACOS_RUNTIME_ICON_PNG := assets/$(APP_NAME)-icon-macos-128.png
 
 ifeq ($(UNAME_S),Linux)
 PLATFORM := linux
@@ -39,6 +40,8 @@ MACOS_DMG_PATH := $(MACOS_STAGING_DIR)/$(MACOS_APP_NAME)-$(VERSION).dmg
 MACOS_INSTALL_DIR ?= /Applications
 ICON_TMP_DIR := target/icons
 MACOS_ICONSET_DIR := $(ICON_TMP_DIR)/$(APP_NAME).iconset
+MACOS_ICON_BG_TEMPLATE := packaging/macos/icon-background.svg.in
+MACOS_ICON_COMPOSITE := $(ICON_TMP_DIR)/$(APP_NAME)-macos.svg
 
 .PHONY: dev build build-linux build-macos package-macos build-unsupported install install-linux install-macos install-unsupported clean-deb clean-macos clean-icons icons icon-runtime icon-macos
 
@@ -81,22 +84,28 @@ icon-macos:
 	@test "$(UNAME_S)" = "Darwin" || { echo "icon-macos must run on macOS (Darwin)."; exit 1; }
 	@command -v iconutil >/dev/null 2>&1 || { echo "iconutil is required on macOS."; exit 1; }
 	@test -f "$(ICON_SOURCE_SVG)" || { echo "missing icon source: $(ICON_SOURCE_SVG)"; exit 1; }
+	@test -f "$(MACOS_ICON_BG_TEMPLATE)" || { echo "missing template: $(MACOS_ICON_BG_TEMPLATE)"; exit 1; }
 	@rm -rf "$(MACOS_ICONSET_DIR)"
 	@mkdir -p "$(MACOS_ICONSET_DIR)" "$(dir $(MACOS_ICON_SRC))"
 	@set -e; \
+	sed '/@SOURCE_SVG@/,$$d' "$(MACOS_ICON_BG_TEMPLATE)" > "$(MACOS_ICON_COMPOSITE)"; \
+	sed -e '1{/<?xml/d;}' -e '/<svg /d' -e '/<\/svg>/d' "$(ICON_SOURCE_SVG)" >> "$(MACOS_ICON_COMPOSITE)"; \
+	sed '1,/@SOURCE_SVG@/d' "$(MACOS_ICON_BG_TEMPLATE)" >> "$(MACOS_ICON_COMPOSITE)"; \
+	echo "Generated composite SVG: $(MACOS_ICON_COMPOSITE)"; \
 	render_png() { \
 		size="$$1"; dest="$$2"; \
 		if command -v rsvg-convert >/dev/null 2>&1; then \
-			rsvg-convert -w "$$size" -h "$$size" "$(ICON_SOURCE_SVG)" -o "$$dest"; \
+			rsvg-convert -w "$$size" -h "$$size" "$(MACOS_ICON_COMPOSITE)" -o "$$dest"; \
 		elif command -v inkscape >/dev/null 2>&1; then \
-			inkscape "$(ICON_SOURCE_SVG)" -w "$$size" -h "$$size" --export-filename="$$dest" >/dev/null; \
+			inkscape "$(MACOS_ICON_COMPOSITE)" -w "$$size" -h "$$size" --export-filename="$$dest" >/dev/null; \
 		elif command -v magick >/dev/null 2>&1; then \
-			magick -background none "$(ICON_SOURCE_SVG)" -resize "$${size}x$${size}" "$$dest"; \
+			magick -background none "$(MACOS_ICON_COMPOSITE)" -resize "$${size}x$${size}" "$$dest"; \
 		else \
-			echo "need rsvg-convert, inkscape, or magick to rasterize $(ICON_SOURCE_SVG)"; \
+			echo "need rsvg-convert, inkscape, or magick to rasterize SVG"; \
 			exit 1; \
 		fi; \
 	}; \
+	render_png 128 "$(MACOS_RUNTIME_ICON_PNG)"; \
 	render_png 16 "$(MACOS_ICONSET_DIR)/icon_16x16.png"; \
 	render_png 32 "$(MACOS_ICONSET_DIR)/icon_16x16@2x.png"; \
 	render_png 32 "$(MACOS_ICONSET_DIR)/icon_32x32.png"; \

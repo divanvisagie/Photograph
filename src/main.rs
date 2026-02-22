@@ -12,6 +12,9 @@ use app::PhotographApp;
 use config::AppConfig;
 use viewer::PreviewBackend;
 
+#[cfg(target_os = "macos")]
+const WINDOW_ICON_PNG: &[u8] = include_bytes!("../assets/photograph-icon-macos-128.png");
+#[cfg(not(target_os = "macos"))]
 const WINDOW_ICON_PNG: &[u8] = include_bytes!("../assets/photograph-icon-128.png");
 
 fn build_window_icon() -> egui::IconData {
