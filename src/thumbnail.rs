@@ -17,6 +17,7 @@ fn has_extension(path: &Path, exts: &[&str]) -> bool {
     exts.iter().any(|known| ext.eq_ignore_ascii_case(known))
 }
 
+/// Returns `true` if the path has a supported image extension.
 pub fn is_supported_image(path: &Path) -> bool {
     has_extension(path, SUPPORTED_IMAGE_EXTS)
 }
@@ -52,22 +53,9 @@ pub fn open_image(path: &Path) -> anyhow::Result<DynamicImage> {
 
 /// Open an image for interactive preview.
 ///
-/// For RAW files this prefers embedded preview/thumbnail images when available,
-/// and falls back to full raw develop otherwise.
+/// Uses the same raw development pipeline as the render/export path so that
+/// preview and final output have identical exposure and tone.
 pub fn open_image_for_preview(path: &Path) -> anyhow::Result<DynamicImage> {
-    // Fast path: non-RAW images via image crate.
-    if let Ok(img) = image::open(path) {
-        return Ok(img);
-    }
-
-    if !has_extension(path, RAW_EXTS) {
-        return Ok(image::open(path)?);
-    }
-
-    if let Ok(Some(img)) = open_embedded_raw_preview(path) {
-        return Ok(img);
-    }
-
     open_image(path)
 }
 
