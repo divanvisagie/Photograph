@@ -22,15 +22,14 @@ use crate::{
     viewer::{PreviewBackend, Viewer},
 };
 
-const BROWSER_WIDTH: f32 = 640.0;
+const BROWSER_WIDTH: f32 = 550.0;
 const TOOLS_WIDTH: f32 = 320.0;
 
 struct ViewerWindow {
     viewer: Viewer,
     open: bool,
     spawn_pos: egui::Pos2,
-    was_loading: bool,
-    needs_resize: bool,
+    placed: bool,
 }
 
 #[derive(Clone)]
@@ -370,30 +369,30 @@ fn next_viewer_spawn_pos(index: usize, viewport_rect: Option<egui::Rect>) -> egu
     const STEP: f32 = 40.0;
 
     // Place viewer just past the browser's default width
-    let base_x = BROWSER_WIDTH;
+    let base_x = BROWSER_WIDTH + 24.0;
     let base_y = 32.0;
 
     let raw_x = base_x + STEP * index as f32;
     let raw_y = base_y + STEP * index as f32;
 
-    if let Some(rect) = viewport_rect {
-        let max_x = (rect.right() - TOOLS_WIDTH - 220.0).max(rect.left() + 8.0);
-        let max_y = (rect.bottom() - 160.0).max(rect.top() + 8.0);
-        egui::pos2(raw_x.min(max_x), raw_y.min(max_y))
-    } else {
-        egui::pos2(raw_x, raw_y)
-    }
+    let pos = egui::pos2(raw_x, raw_y);
+    tracing::debug!(
+        index,
+        base_x,
+        base_y,
+        x = pos.x,
+        y = pos.y,
+        ?viewport_rect,
+        "viewer spawn position"
+    );
+    pos
 }
 
-fn viewer_default_size(viewport_rect: Option<egui::Rect>, content_rect: egui::Rect) -> egui::Vec2 {
-    if let Some(rect) = viewport_rect {
-        // Fill the space between browser and tools
-        let width = (rect.width() - BROWSER_WIDTH - TOOLS_WIDTH).max(400.0);
-        let height = (content_rect.height() - 16.0).max(300.0);
-        egui::vec2(width, height)
-    } else {
-        egui::vec2(800.0, 600.0)
-    }
+fn viewer_default_size(content_rect: egui::Rect) -> egui::Vec2 {
+    // Fill the space between browser and tools
+    let width = (content_rect.width() - BROWSER_WIDTH - TOOLS_WIDTH - 80.0).max(400.0);
+    let height = (content_rect.height() - 16.0).max(300.0);
+    egui::vec2(width, height)
 }
 
 fn default_render_dir() -> PathBuf {
@@ -641,12 +640,6 @@ impl eframe::App for PhotographApp {
         self.browser.poll(ctx);
         for vw in &mut self.viewers {
             vw.viewer.drain(ctx);
-            // Detect load completion to trigger a one-time resize
-            let loading_now = vw.viewer.is_loading();
-            if vw.was_loading && !loading_now {
-                vw.needs_resize = true;
-            }
-            vw.was_loading = loading_now;
         }
         self.poll_render_events();
 
@@ -667,13 +660,13 @@ impl eframe::App for PhotographApp {
                     self.next_id += 1;
                     let mut viewer = Viewer::new(id, self.preview_backend);
                     viewer.set_image(path.clone(), ctx);
-                    let spawn_pos = next_viewer_spawn_pos(id, viewport_rect);
+                    let open_count = self.viewers.iter().filter(|v| v.open).count();
+                    let spawn_pos = next_viewer_spawn_pos(open_count, viewport_rect);
                     self.viewers.push(ViewerWindow {
                         viewer,
                         open: true,
                         spawn_pos,
-                        was_loading: true,
-                        needs_resize: false,
+                        placed: false,
                     });
                     self.active_viewer = Some(id);
                 }
@@ -868,6 +861,10 @@ impl eframe::App for PhotographApp {
             self.show_render_window = show_render_window;
         }
 
+        // Debug: collect window rects for the debug overlay
+        #[cfg(debug_assertions)]
+        let mut debug_windows: Vec<(&str, egui::Rect)> = Vec::new();
+
         // Browser window — path bar + thumbnail grid (left side, no close button)
         {
             let height = (content_rect.height() - 50.0).max(1.0);
@@ -878,13 +875,17 @@ impl eframe::App for PhotographApp {
                 .anchor(egui::Align2::LEFT_TOP, egui::vec2(0.0, content_rect.top()))
                 .default_size(egui::vec2(BROWSER_WIDTH, height));
 
-            window.show(ctx, |ui| {
+            let resp = window.show(ctx, |ui| {
                 self.browser.show_contents(ui, ctx);
             });
+            #[cfg(debug_assertions)]
+            if let Some(inner) = resp {
+                debug_windows.push(("Browser", inner.response.rect));
+            }
         }
 
         // Render each viewer window
-        let viewer_size = viewer_default_size(viewport_rect, content_rect);
+        let viewer_size = viewer_default_size(content_rect);
         let mut newly_active: Option<usize> = None;
         for vw in &mut self.viewers {
             let title = vw.viewer.filename();
@@ -897,16 +898,15 @@ impl eframe::App for PhotographApp {
                 .default_size(viewer_size)
                 .default_pos(vw.spawn_pos);
 
-            // After the image loads, force-expand the window for one frame
-            // so it fills the space between browser and tools.
-            if vw.needs_resize {
-                window = window.min_size(viewer_size);
-                vw.needs_resize = false;
+            // Force position on first frame so egui doesn't ignore the offset
+            if !vw.placed {
+                window = window.current_pos(vw.spawn_pos);
+                vw.placed = true;
             }
 
             let resp = window.show(ctx, |ui| {
-                    vw.viewer.show_image(ui);
-                });
+                vw.viewer.show_image(ui);
+            });
 
             // Detect clicks inside this viewer window to make it active
             if let Some(inner) = resp {
@@ -915,6 +915,8 @@ impl eframe::App for PhotographApp {
                 if clicked_inside {
                     newly_active = Some(vw.viewer.id());
                 }
+                #[cfg(debug_assertions)]
+                debug_windows.push(("Viewer", inner.response.rect));
             }
         }
         if let Some(id) = newly_active {
@@ -934,7 +936,7 @@ impl eframe::App for PhotographApp {
                 let label = format!("Tools — {}", vw.viewer.filename());
                 let mut window = egui::Window::new(&label)
                     .id(egui::Id::new("tools_window"))
-                    .order(egui::Order::Foreground)
+                    //.order(egui::Order::Foreground)
                     .resizable(false)
                     .movable(true);
 
@@ -946,12 +948,55 @@ impl eframe::App for PhotographApp {
                     .fixed_size(egui::vec2(TOOLS_WIDTH, height))
                     .movable(false);
 
-                window.show(ctx, |ui| {
+                let resp = window.show(ctx, |ui| {
                     vw.viewer.show_controls(ui);
                 });
+                #[cfg(debug_assertions)]
+                if let Some(inner) = resp {
+                    debug_windows.push(("Tools", inner.response.rect));
+                }
             }
         }
         self.tools_window_was_visible = tools_visible;
+
+        #[cfg(debug_assertions)]
+        {
+            egui::Window::new("Debug")
+                .id(egui::Id::new("debug_window"))
+                .default_pos([10.0, 400.0])
+                .default_size([300.0, 200.0])
+                .show(ctx, |ui| {
+                    if let Some(rect) = viewport_rect {
+                        ui.label(format!(
+                            "Viewport: {:.0}x{:.0}",
+                            rect.width(),
+                            rect.height()
+                        ));
+                    }
+                    ui.label(format!(
+                        "Content rect: {:.0},{:.0} -> {:.0}x{:.0}",
+                        content_rect.left(),
+                        content_rect.top(),
+                        content_rect.width(),
+                        content_rect.height()
+                    ));
+                    ui.label(format!(
+                        "Viewer default size: {:.0}x{:.0}",
+                        viewer_size.x, viewer_size.y
+                    ));
+                    ui.separator();
+                    for (name, rect) in &debug_windows {
+                        ui.label(format!(
+                            "{}: {:.0},{:.0}  {:.0}x{:.0}",
+                            name,
+                            rect.left(),
+                            rect.top(),
+                            rect.width(),
+                            rect.height()
+                        ));
+                    }
+                });
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

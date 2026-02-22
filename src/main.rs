@@ -83,6 +83,10 @@ fn report_preview_backend(backend: PreviewBackend) {
 }
 
 fn main() -> eframe::Result {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     let config = AppConfig::load();
     let preview_backend = resolve_preview_backend(&config);
     report_preview_backend(preview_backend);
