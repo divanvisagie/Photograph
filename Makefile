@@ -131,7 +131,7 @@ build-linux: icon-runtime
 		"Section: graphics" \
 		"Priority: optional" \
 		"Architecture: $(ARCH)" \
-		"Maintainer: Divan Visagie <divan@local>" \
+		"Maintainer: Divan Visagie <me@divanv.com>" \
 		"Depends: libc6, libgcc-s1" \
 		"Description: Photograph native photo editor" \
 		" Native Rust/egui photo editor with preview and export workflows." \
