@@ -112,6 +112,7 @@ enum DragTarget {
     Interior,
 }
 
+/// Image viewer/editor window state, including async preview processing.
 pub struct Viewer {
     id: usize,
     preview_backend: PreviewBackend,
@@ -156,6 +157,7 @@ pub struct Viewer {
 }
 
 impl Viewer {
+    /// Creates a viewer instance with a stable window ID and preview backend.
     pub fn new(id: usize, preview_backend: PreviewBackend) -> Self {
         let (tx, rx) = mpsc::sync_channel(8);
         Self {
@@ -196,14 +198,21 @@ impl Viewer {
         }
     }
 
+    /// Returns the viewer's stable window identifier.
     pub fn id(&self) -> usize {
         self.id
     }
 
+    pub fn is_loading(&self) -> bool {
+        self.loading
+    }
+
+    /// Returns the currently loaded image path, if any.
     pub fn path(&self) -> Option<&PathBuf> {
         self.current_path.as_ref()
     }
 
+    /// Returns the current image filename for window labels/UI.
     pub fn filename(&self) -> String {
         self.current_path
             .as_ref()
@@ -213,6 +222,7 @@ impl Viewer {
             .into_owned()
     }
 
+    /// Loads a new image path and resets viewer state for background preview loading.
     pub fn set_image(&mut self, path: PathBuf, ctx: &egui::Context) {
         if self.current_path.as_ref() == Some(&path) {
             return;
@@ -388,6 +398,7 @@ impl Viewer {
         self.preview_cache_lru.push_back(key.clone());
     }
 
+    /// Drains background load/process results and updates viewer textures/state.
     pub fn drain(&mut self, ctx: &egui::Context) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
@@ -461,6 +472,7 @@ impl Viewer {
         }
     }
 
+    /// Renders the image viewport and kicks off preview processing when needed.
     pub fn show_image(&mut self, ui: &mut egui::Ui) {
         // If edits arrive while processing is active, bump the requested generation
         // so the in-flight result is ignored on arrival.
@@ -970,6 +982,7 @@ impl Viewer {
         }
     }
 
+    /// Renders the editing controls panel for the current image.
     pub fn show_controls(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical()
             .id_salt("controls_scroll")

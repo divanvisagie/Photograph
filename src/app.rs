@@ -22,10 +22,15 @@ use crate::{
     viewer::{PreviewBackend, Viewer},
 };
 
+const BROWSER_WIDTH: f32 = 640.0;
+const TOOLS_WIDTH: f32 = 320.0;
+
 struct ViewerWindow {
     viewer: Viewer,
     open: bool,
     spawn_pos: egui::Pos2,
+    was_loading: bool,
+    needs_resize: bool,
 }
 
 #[derive(Clone)]
@@ -117,6 +122,7 @@ impl RenderSpeedProfile {
     }
 }
 
+/// Top-level `eframe` application state for the Photograph UI.
 pub struct PhotographApp {
     browser: Browser,
     preview_backend: PreviewBackend,
@@ -148,6 +154,7 @@ pub struct PhotographApp {
 }
 
 impl PhotographApp {
+    /// Builds the app from persisted config and the selected preview backend.
     pub fn new(
         _cc: &eframe::CreationContext<'_>,
         config: AppConfig,
@@ -360,19 +367,32 @@ impl PhotographApp {
 }
 
 fn next_viewer_spawn_pos(index: usize, viewport_rect: Option<egui::Rect>) -> egui::Pos2 {
-    const BASE_X: f32 = 620.0;
-    const BASE_Y: f32 = 64.0;
     const STEP: f32 = 40.0;
 
-    let raw_x = BASE_X + STEP * index as f32;
-    let raw_y = BASE_Y + STEP * index as f32;
+    // Place viewer just past the browser's default width
+    let base_x = BROWSER_WIDTH;
+    let base_y = 32.0;
+
+    let raw_x = base_x + STEP * index as f32;
+    let raw_y = base_y + STEP * index as f32;
 
     if let Some(rect) = viewport_rect {
-        let max_x = (rect.right() - 220.0).max(rect.left() + 8.0);
+        let max_x = (rect.right() - TOOLS_WIDTH - 220.0).max(rect.left() + 8.0);
         let max_y = (rect.bottom() - 160.0).max(rect.top() + 8.0);
         egui::pos2(raw_x.min(max_x), raw_y.min(max_y))
     } else {
         egui::pos2(raw_x, raw_y)
+    }
+}
+
+fn viewer_default_size(viewport_rect: Option<egui::Rect>, content_rect: egui::Rect) -> egui::Vec2 {
+    if let Some(rect) = viewport_rect {
+        // Fill the space between browser and tools
+        let width = (rect.width() - BROWSER_WIDTH - TOOLS_WIDTH).max(400.0);
+        let height = (content_rect.height() - 16.0).max(300.0);
+        egui::vec2(width, height)
+    } else {
+        egui::vec2(800.0, 600.0)
     }
 }
 
@@ -621,6 +641,12 @@ impl eframe::App for PhotographApp {
         self.browser.poll(ctx);
         for vw in &mut self.viewers {
             vw.viewer.drain(ctx);
+            // Detect load completion to trigger a one-time resize
+            let loading_now = vw.viewer.is_loading();
+            if vw.was_loading && !loading_now {
+                vw.needs_resize = true;
+            }
+            vw.was_loading = loading_now;
         }
         self.poll_render_events();
 
@@ -646,6 +672,8 @@ impl eframe::App for PhotographApp {
                         viewer,
                         open: true,
                         spawn_pos,
+                        was_loading: true,
+                        needs_resize: false,
                     });
                     self.active_viewer = Some(id);
                 }
@@ -842,23 +870,13 @@ impl eframe::App for PhotographApp {
 
         // Browser window — path bar + thumbnail grid (left side, no close button)
         {
-            let mut window = egui::Window::new("Browser")
+            let height = (content_rect.height() - 50.0).max(1.0);
+            let window = egui::Window::new("Browser")
                 .id(egui::Id::new("browser_window"))
                 .resizable(true)
-                .collapsible(true);
-
-            if let Some(rect) = viewport_rect {
-                const BROWSER_WIDTH: f32 = 640.0;
-                let y = content_rect.top();
-                let height = ((content_rect.height() - 50.0) / 2.0).max(1.0);
-                window = window
-                    .default_pos(egui::pos2(rect.left(), y))
-                    .default_size(egui::vec2(BROWSER_WIDTH, height));
-            } else {
-                window = window
-                    .default_pos([10.0, 64.0])
-                    .default_size([640.0, 350.0]);
-            }
+                .collapsible(true)
+                .anchor(egui::Align2::LEFT_TOP, egui::vec2(0.0, content_rect.top()))
+                .default_size(egui::vec2(BROWSER_WIDTH, height));
 
             window.show(ctx, |ui| {
                 self.browser.show_contents(ui, ctx);
@@ -866,16 +884,27 @@ impl eframe::App for PhotographApp {
         }
 
         // Render each viewer window
+        let viewer_size = viewer_default_size(viewport_rect, content_rect);
         let mut newly_active: Option<usize> = None;
         for vw in &mut self.viewers {
             let title = vw.viewer.filename();
             let window_id = format!("viewer_{}", vw.viewer.id());
-            let resp = egui::Window::new(&title)
-                .id(egui::Id::new(&window_id))
+            let id = egui::Id::new(&window_id);
+
+            let mut window = egui::Window::new(&title)
+                .id(id)
                 .open(&mut vw.open)
-                .default_size([800.0, 600.0])
-                .default_pos(vw.spawn_pos)
-                .show(ctx, |ui| {
+                .default_size(viewer_size)
+                .default_pos(vw.spawn_pos);
+
+            // After the image loads, force-expand the window for one frame
+            // so it fills the space between browser and tools.
+            if vw.needs_resize {
+                window = window.min_size(viewer_size);
+                vw.needs_resize = false;
+            }
+
+            let resp = window.show(ctx, |ui| {
                     vw.viewer.show_image(ui);
                 });
 
@@ -909,40 +938,17 @@ impl eframe::App for PhotographApp {
                     .resizable(false)
                     .movable(true);
 
-                const TOOLS_WIDTH: f32 = 320.0;
-                let right_edge = viewport_rect.map_or(content_rect.right(), |rect| rect.right());
-                let default_x = right_edge - TOOLS_WIDTH;
-                let default_y = content_rect.top();
                 let height = (content_rect.height() - 50.0).max(1.0);
-                let mut pos = self
-                    .config
-                    .tools_window_x
-                    .zip(self.config.tools_window_y)
-                    .map(|(x, y)| egui::pos2(x, y))
-                    .unwrap_or_else(|| egui::pos2(default_x, default_y));
-                if let Some(rect) = viewport_rect {
-                    let min_x = rect.left();
-                    let max_x = rect.right() - TOOLS_WIDTH;
-                    let min_y = content_rect.top();
-                    let max_y = (content_rect.bottom() - height).max(min_y);
-                    pos.x = pos.x.clamp(min_x, max_x);
-                    pos.y = pos.y.clamp(min_y, max_y);
-                }
+                // Anchor to top-right so the window sits flush against
+                // the right edge, accounting for all frame/chrome automatically.
                 window = window
-                    .default_pos(pos)
-                    .fixed_size(egui::vec2(TOOLS_WIDTH, height));
-                if tools_just_opened {
-                    window = window.current_pos(pos);
-                }
+                    .anchor(egui::Align2::RIGHT_TOP, egui::vec2(0.0, content_rect.top()))
+                    .fixed_size(egui::vec2(TOOLS_WIDTH, height))
+                    .movable(false);
 
-                let resp = window.show(ctx, |ui| {
+                window.show(ctx, |ui| {
                     vw.viewer.show_controls(ui);
                 });
-                if let Some(inner) = resp {
-                    let pos = inner.response.rect.min;
-                    self.config.tools_window_x = Some(pos.x);
-                    self.config.tools_window_y = Some(pos.y);
-                }
             }
         }
         self.tools_window_was_visible = tools_visible;
