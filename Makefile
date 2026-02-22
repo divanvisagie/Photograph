@@ -1,5 +1,7 @@
 APP_NAME := photograph
 VERSION := $(shell awk -F\" '/^version = / { print $$2; exit }' Cargo.toml)
+DEB_REVISION ?= 1
+DEB_VERSION := $(VERSION)-$(DEB_REVISION)
 UNAME_S := $(shell uname -s)
 ARCH := $(shell dpkg --print-architecture 2>/dev/null || echo amd64)
 MACOS_APP_NAME := Photograph
@@ -14,8 +16,8 @@ PLATFORM := unsupported
 endif
 
 DEB_DIR := target/deb
-PKG_ROOT := $(DEB_DIR)/$(APP_NAME)_$(VERSION)_$(ARCH)
-DEB_PATH := $(DEB_DIR)/$(APP_NAME)_$(VERSION)_$(ARCH).deb
+PKG_ROOT := $(DEB_DIR)/$(APP_NAME)_$(DEB_VERSION)_$(ARCH)
+DEB_PATH := $(DEB_DIR)/$(APP_NAME)_$(DEB_VERSION)_$(ARCH).deb
 LINUX_DESKTOP_SRC := packaging/linux/$(APP_NAME).desktop
 LINUX_ICON_SRC := packaging/linux/$(APP_NAME).svg
 LINUX_DESKTOP_DST := $(PKG_ROOT)/usr/share/applications/$(APP_NAME).desktop
@@ -61,7 +63,7 @@ build-linux:
 	install -m 644 "$(LINUX_ICON_SRC)" "$(LINUX_ICON_DST)"
 	printf '%s\n' \
 		"Package: $(APP_NAME)" \
-		"Version: $(VERSION)" \
+		"Version: $(DEB_VERSION)" \
 		"Section: graphics" \
 		"Priority: optional" \
 		"Architecture: $(ARCH)" \
@@ -75,7 +77,7 @@ build-linux:
 	@echo "Install with: sudo apt install ./$(DEB_PATH)"
 
 install-linux: build-linux
-	sudo apt install -y "./$(DEB_PATH)"
+	sudo apt install --reinstall -y "./$(DEB_PATH)"
 
 clean-deb:
 	rm -rf "$(DEB_DIR)"

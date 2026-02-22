@@ -9,3 +9,5 @@ Icon=photograph
 Terminal=false
 Categories=Graphics;Photography;
 StartupNotify=true
+StartupWMClass=photograph
+X-GNOME-WMClass=photograph

@@ -93,6 +93,7 @@ fn main() -> eframe::Result {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Photograph")
+            .with_app_id("photograph")
             .with_icon(build_window_icon())
             .with_inner_size([width, height]),
         ..Default::default()

@@ -143,6 +143,7 @@ pub struct PhotographApp {
     render_failed: usize,
     render_current: String,
     render_rx: Option<mpsc::Receiver<RenderEvent>>,
+    tools_window_was_visible: bool,
     config: AppConfig,
 }
 
@@ -182,6 +183,7 @@ impl PhotographApp {
             render_failed: 0,
             render_current: String::new(),
             render_rx: None,
+            tools_window_was_visible: false,
             config,
         }
     }
@@ -891,7 +893,9 @@ impl eframe::App for PhotographApp {
         }
 
         // Tool window — controls + EXIF for the active viewer
-        if self.active_viewer.is_some() {
+        let tools_visible = self.active_viewer.is_some();
+        let tools_just_opened = tools_visible && !self.tools_window_was_visible;
+        if tools_visible {
             let active_id = self.active_viewer.unwrap();
             if let Some(vw) = self
                 .viewers
@@ -903,25 +907,45 @@ impl eframe::App for PhotographApp {
                     .id(egui::Id::new("tools_window"))
                     .order(egui::Order::Foreground)
                     .resizable(false)
-                    .movable(false);
+                    .movable(true);
 
+                const TOOLS_WIDTH: f32 = 320.0;
+                let right_edge = viewport_rect.map_or(content_rect.right(), |rect| rect.right());
+                let default_x = right_edge - TOOLS_WIDTH;
+                let default_y = content_rect.top();
+                let height = (content_rect.height() - 50.0).max(1.0);
+                let mut pos = self
+                    .config
+                    .tools_window_x
+                    .zip(self.config.tools_window_y)
+                    .map(|(x, y)| egui::pos2(x, y))
+                    .unwrap_or_else(|| egui::pos2(default_x, default_y));
                 if let Some(rect) = viewport_rect {
-                    const TOOLS_WIDTH: f32 = 320.0;
-                    let x = rect.right() - TOOLS_WIDTH;
-                    let y = content_rect.top();
-                    let height = (content_rect.height() - 50.0).max(1.0);
-                    window = window
-                        .fixed_pos(egui::pos2(x, y))
-                        .fixed_size(egui::vec2(TOOLS_WIDTH, height));
-                } else {
-                    window = window.fixed_pos([620.0, 64.0]).fixed_size([320.0, 700.0]);
+                    let min_x = rect.left();
+                    let max_x = rect.right() - TOOLS_WIDTH;
+                    let min_y = content_rect.top();
+                    let max_y = (content_rect.bottom() - height).max(min_y);
+                    pos.x = pos.x.clamp(min_x, max_x);
+                    pos.y = pos.y.clamp(min_y, max_y);
+                }
+                window = window
+                    .default_pos(pos)
+                    .fixed_size(egui::vec2(TOOLS_WIDTH, height));
+                if tools_just_opened {
+                    window = window.current_pos(pos);
                 }
 
-                window.show(ctx, |ui| {
+                let resp = window.show(ctx, |ui| {
                     vw.viewer.show_controls(ui);
                 });
+                if let Some(inner) = resp {
+                    let pos = inner.response.rect.min;
+                    self.config.tools_window_x = Some(pos.x);
+                    self.config.tools_window_y = Some(pos.y);
+                }
             }
         }
+        self.tools_window_was_visible = tools_visible;
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

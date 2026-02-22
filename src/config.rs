@@ -8,6 +8,8 @@ pub struct AppConfig {
     pub window_height: Option<f32>,
     pub browse_path: Option<PathBuf>,
     pub preview_backend: Option<String>,
+    pub tools_window_x: Option<f32>,
+    pub tools_window_y: Option<f32>,
 }
 
 impl AppConfig {
