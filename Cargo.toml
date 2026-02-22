@@ -3,6 +3,7 @@ name = "photograph"
 version = "0.1.0"
 edition = "2024"
 default-run = "photograph"
+license = "GPL-2.0-only"
 
 [dependencies]
 eframe = "0.31"
