@@ -223,16 +223,36 @@ impl Viewer {
     }
 
     /// Loads a new image path and resets viewer state for background preview loading.
+    /// Persists current edits to the sidecar file, if any.
+    pub fn save_edits(&self) {
+        if let Some(path) = &self.current_path {
+            if self.has_edits() {
+                let _ = self.edit_state.save(path);
+            }
+        }
+    }
+
+    fn has_edits(&self) -> bool {
+        serde_json::to_string(&self.edit_state).ok()
+            != serde_json::to_string(&EditState::default()).ok()
+    }
+
     pub fn set_image(&mut self, path: PathBuf, ctx: &egui::Context) {
         if self.current_path.as_ref() == Some(&path) {
             return;
+        }
+        // Save current edits before switching
+        if let Some(prev_path) = &self.current_path {
+            if self.has_edits() {
+                let _ = self.edit_state.save(prev_path);
+            }
         }
         self.current_path = Some(path.clone());
         self.source_signature = source_signature(&path);
         self.preview = None;
         self.texture = None;
         self.original_texture = None;
-        self.edit_state = EditState::default();
+        self.edit_state = EditState::load(&path).unwrap_or_default();
         self.needs_process = false;
         self.needs_final_process = false;
         self.last_slider_change = None;
@@ -584,6 +604,13 @@ impl Viewer {
                     self.crop_drag = None;
                     self.crop_create_origin = None;
                 }
+            }
+
+            if ui
+                .add_enabled(self.has_edits(), egui::Button::new("Save"))
+                .clicked()
+            {
+                self.save_edits();
             }
 
             if self.processing || self.reloading_preview {

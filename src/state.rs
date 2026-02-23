@@ -109,6 +109,9 @@ impl EditState {
     /// Saves the current edit state to the image sidecar JSON.
     pub fn save(&self, image_path: &Path) -> anyhow::Result<()> {
         let sidecar = sidecar_path(image_path);
+        if let Some(parent) = sidecar.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let json = serde_json::to_string_pretty(self)?;
         std::fs::write(sidecar, json)?;
         Ok(())
@@ -116,8 +119,19 @@ impl EditState {
 }
 
 fn sidecar_path(image_path: &Path) -> std::path::PathBuf {
-    let mut p = image_path.to_path_buf();
-    let filename = p.file_name().unwrap().to_string_lossy().into_owned();
-    p.set_file_name(format!("{}.json", filename));
-    p
+    let dir = image_path.parent().unwrap_or(Path::new("."));
+    let filename = image_path.file_name().unwrap().to_string_lossy();
+    dir.join(".edits").join(format!("{}.json", filename))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn sidecar_uses_edits_folder() {
+        let p = sidecar_path(Path::new("/photos/IMG_001.RAF"));
+        assert_eq!(p, PathBuf::from("/photos/.edits/IMG_001.RAF.json"));
+    }
 }

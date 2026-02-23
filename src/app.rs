@@ -1000,6 +1000,9 @@ impl eframe::App for PhotographApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        for vw in &self.viewers {
+            vw.viewer.save_edits();
+        }
         self.config.browse_path = Some(self.browser.current_dir.clone());
         self.config.save();
     }
