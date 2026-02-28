@@ -878,18 +878,14 @@ fn init_gpu_context() -> Option<GpuContext> {
         backends: wgpu::Backends::VULKAN,
         ..Default::default()
     });
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        force_fallback_adapter: false,
-        compatible_surface: None,
-    }))?;
+    let adapter = instance
+        .enumerate_adapters(wgpu::Backends::VULKAN)
+        .into_iter()
+        .find(|adapter| {
+            let info = adapter.get_info();
+            info.backend == wgpu::Backend::Vulkan && info.device_type == wgpu::DeviceType::DiscreteGpu
+        })?;
     let adapter_info = adapter.get_info();
-    if adapter_info.backend != wgpu::Backend::Vulkan {
-        return None;
-    }
-    if adapter_info.device_type != wgpu::DeviceType::DiscreteGpu {
-        return None;
-    }
     let adapter_vendor_id = adapter_info.vendor;
     let adapter_name = adapter_info.name;
     let adapter_backend = adapter_info.backend.to_string();

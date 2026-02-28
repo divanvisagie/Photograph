@@ -39,6 +39,14 @@ Primary metrics to compare:
 - `METRIC preview_ms_median`
 - `METRIC slider_ms_median`
 
+Latest 20-file host run on 2026-02-28 (`/tank/home/divan/Photography/Raw`, `auto` backend, no debug CPU fallback):
+
+- Runtime: `gpu_pipeline availability: available, adapter=NVIDIA RTX 2000 Ada Generation (vulkan)`
+- `METRIC preview_ms_median=20.49`
+- `METRIC slider_ms_median=24.36`
+- `METRIC export_wall_s=19.72`
+- `METRIC export_images_per_sec=1.014`
+
 If needed for debugging-only baseline comparisons:
 
 ```bash
