@@ -68,7 +68,7 @@ build-linux:
 		"Priority: optional" \
 		"Architecture: $(ARCH)" \
 		"Maintainer: Divan Visagie <me@divanv.com>" \
-		"Depends: libc6, libgcc-s1" \
+		"Depends: libc6, libgcc-s1, libvulkan1" \
 		"Description: Photograph native photo editor" \
 		" Native Rust/egui photo editor with preview and export workflows." \
 		> "$(PKG_ROOT)/DEBIAN/control"

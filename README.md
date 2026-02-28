@@ -41,6 +41,24 @@ cargo run --bin photograph
 
 The app opens a native window and remembers UI state/config between runs.
 
+## Ubuntu/Debian Dependencies
+
+For local runs and debugging, install Vulkan user-space tools and verify adapter visibility:
+
+```bash
+sudo apt update
+sudo apt install -y vulkan-tools
+vulkaninfo --summary
+```
+
+If `vulkaninfo` cannot detect your discrete adapter, fix driver/runtime setup before running Photograph.
+
+For `.deb` packaging from the `Makefile`:
+
+```bash
+sudo apt install -y dpkg-dev
+```
+
 ## Development
 
 Build, run, and test:
