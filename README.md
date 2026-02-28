@@ -10,6 +10,8 @@ Photograph focuses on practical desktop workflows: browsing folders, opening ima
 
 Active project (MVP is usable and still evolving).
 
+Current support intent: Ubuntu Linux.
+
 ## Screenshot
 
 ![Photograph screenshot](docs/photograph-ui.png)
@@ -61,7 +63,6 @@ make dev
 Photograph stores config at:
 
 - Linux: `~/.config/photograph/config.toml`
-- macOS: `~/Library/Application Support/photograph/config.toml` (via `dirs::config_dir()`)
 
 Current persisted settings include window sizes/positions, last browsed path, and preview backend preference.
 
@@ -86,7 +87,9 @@ PHOTOGRAPH_DEBUG_ALLOW_CPU_FALLBACK=1 PHOTOGRAPH_PREVIEW_BACKEND=cpu cargo run -
 
 ## Packaging
 
-The `Makefile` supports Linux (`.deb`) and macOS (`.app`, optional `.dmg`) packaging.
+The `Makefile` supports Linux (`.deb`) packaging.
+
+Photograph is currently intended to be supported on Ubuntu Linux.
 
 Icon assets are derived from the SVG source at `packaging/linux/photograph.svg`:
 
@@ -94,20 +97,18 @@ Icon assets are derived from the SVG source at `packaging/linux/photograph.svg`:
 make icons
 ```
 
-This regenerates the embedded runtime PNG (`assets/photograph-icon-128.png`) and, on macOS, the bundle icon (`packaging/macos/photograph.icns`).
+This regenerates the embedded runtime PNG (`assets/photograph-icon-128.png`).
+Normal `make build` does not regenerate icon assets.
 
 Common targets:
 
 ```bash
-make build          # platform-aware packaging build
-make install        # platform-aware install
+make build          # Linux packaging build
+make install        # Linux package install
 make build-linux    # build .deb on Linux
-make build-macos    # build .app on macOS
-make package-macos  # build .dmg on macOS
 ```
 
 Linux packaging assets live under `packaging/linux/`.
-macOS bundle metadata lives under `packaging/macos/`.
 
 ## Performance Probe
 
@@ -137,7 +138,7 @@ These docs include Mermaid diagrams (flowcharts and sequence diagrams) for previ
 - `src/bin/perf_probe.rs` benchmark helper
 - `docs/` architecture notes and design decisions
 - `assets/` embedded app assets (including icon)
-- `packaging/` Linux/macOS packaging files
+- `packaging/` Linux packaging files
 - `Makefile` dev/build/install/package commands
 
 ## License
