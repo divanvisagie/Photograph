@@ -45,6 +45,55 @@ fn scale_to_cap(img: DynamicImage, cap: u32) -> DynamicImage {
     }
 }
 
+fn load_preview_stages_with_hooks<FPreview, FFull>(
+    path: &Path,
+    cap: u32,
+    open_preview_with_source: FPreview,
+    open_full: FFull,
+) -> anyhow::Result<Vec<DynamicImage>>
+where
+    FPreview: Fn(&Path) -> anyhow::Result<(DynamicImage, crate::thumbnail::PreviewSource)>,
+    FFull: Fn(&Path) -> anyhow::Result<DynamicImage>,
+{
+    let (img, source) = open_preview_with_source(path)?;
+    let mut stages = vec![scale_to_cap(img, cap)];
+
+    // For RAW files loaded from embedded preview payloads, schedule
+    // a second-stage full decode to converge toward full-quality preview.
+    if crate::thumbnail::is_raw_image(path) && source == crate::thumbnail::PreviewSource::Embedded {
+        if let Ok(full) = open_full(path) {
+            stages.push(scale_to_cap(full, cap));
+        }
+    }
+
+    Ok(stages)
+}
+
+fn load_preview_stages(path: &Path, cap: u32) -> anyhow::Result<Vec<DynamicImage>> {
+    load_preview_stages_with_hooks(
+        path,
+        cap,
+        crate::thumbnail::open_image_for_preview_with_source,
+        crate::thumbnail::open_image,
+    )
+}
+
+fn send_loaded_preview_stages(path: PathBuf, cap: u32, tx: &mpsc::SyncSender<BgResult>) {
+    match load_preview_stages(&path, cap) {
+        Ok(stages) => {
+            for img in stages {
+                let _ = tx.send(BgResult::Loaded {
+                    path: path.clone(),
+                    img,
+                });
+            }
+        }
+        Err(_) => {
+            let _ = tx.send(BgResult::LoadFailed(path));
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreviewBackend {
     Cpu,
@@ -285,32 +334,7 @@ impl Viewer {
         let ctx2 = ctx.clone();
         let cap = self.preview_max;
         std::thread::spawn(move || {
-            let load_path = path.clone();
-            match crate::thumbnail::open_image_for_preview_with_source(&load_path) {
-                Ok((img, source)) => {
-                    let preview = scale_to_cap(img, cap);
-                    let _ = tx.send(BgResult::Loaded {
-                        path: load_path.clone(),
-                        img: preview,
-                    });
-
-                    // For RAW files loaded from embedded preview payloads, schedule
-                    // a second-stage full decode to converge toward full-quality preview.
-                    if crate::thumbnail::is_raw_image(&load_path)
-                        && source == crate::thumbnail::PreviewSource::Embedded
-                    {
-                        if let Ok(full) = crate::thumbnail::open_image(&load_path) {
-                            let _ = tx.send(BgResult::Loaded {
-                                path: load_path.clone(),
-                                img: scale_to_cap(full, cap),
-                            });
-                        }
-                    }
-                }
-                Err(_) => {
-                    let _ = tx.send(BgResult::LoadFailed(load_path));
-                }
-            }
+            send_loaded_preview_stages(path, cap, &tx);
             ctx2.request_repaint();
         });
     }
@@ -579,19 +603,7 @@ impl Viewer {
                     let path = self.current_path.clone().unwrap();
                     let cap = self.preview_max;
                     std::thread::spawn(move || {
-                        match crate::thumbnail::open_image_for_preview(&path) {
-                            Ok(img) => {
-                                let preview = if img.width() > cap || img.height() > cap {
-                                    img.thumbnail(cap, cap)
-                                } else {
-                                    img
-                                };
-                                let _ = tx.send(BgResult::Loaded { path, img: preview });
-                            }
-                            Err(_) => {
-                                let _ = tx.send(BgResult::LoadFailed(path));
-                            }
-                        }
+                        send_loaded_preview_stages(path, cap, &tx);
                         ctx2.request_repaint();
                     });
                 } else {
@@ -2014,8 +2026,8 @@ mod tests {
 
     use super::{
         INTERACTIVE_PREVIEW_MAX, PreviewBackend, bump_requested_generation_for_pending_changes,
-        downscale_for_interactive, edit_state_signature, process_preview_with_backend_and_gpu_hook,
-        source_signature,
+        downscale_for_interactive, edit_state_signature, load_preview_stages_with_hooks,
+        process_preview_with_backend_and_gpu_hook, source_signature,
     };
     use crate::state::EditState;
 
@@ -2150,5 +2162,78 @@ mod tests {
     fn source_signature_is_stable_for_same_path() {
         let path = Path::new("/tmp/photograph-nonexistent-raw.raf");
         assert_eq!(source_signature(path), source_signature(path));
+    }
+
+    #[test]
+    fn raw_embedded_preview_adds_full_quality_stage() {
+        let path = Path::new("/tmp/test.raf");
+        let out = load_preview_stages_with_hooks(
+            path,
+            2000,
+            |_path| {
+                Ok((
+                    DynamicImage::ImageRgba8(ImageBuffer::from_pixel(1200, 800, Rgba([1, 2, 3, 255]))),
+                    crate::thumbnail::PreviewSource::Embedded,
+                ))
+            },
+            |_path| {
+                Ok(DynamicImage::ImageRgba8(ImageBuffer::from_pixel(
+                    4000,
+                    3000,
+                    Rgba([9, 9, 9, 255]),
+                )))
+            },
+        )
+        .expect("staged preview load should succeed");
+
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].width(), 1200);
+        assert_eq!(out[0].height(), 800);
+        assert_eq!(out[1].width(), 2000);
+        assert_eq!(out[1].height(), 1500);
+    }
+
+    #[test]
+    fn raw_full_preview_source_does_not_add_second_stage() {
+        let path = Path::new("/tmp/test.raf");
+        let out = load_preview_stages_with_hooks(
+            path,
+            2000,
+            |_path| {
+                Ok((
+                    DynamicImage::ImageRgba8(ImageBuffer::from_pixel(1800, 1200, Rgba([1, 2, 3, 255]))),
+                    crate::thumbnail::PreviewSource::FullDevelop,
+                ))
+            },
+            |_path| {
+                panic!("full decode should not run when preview source is already full quality")
+            },
+        )
+        .expect("staged preview load should succeed");
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].width(), 1800);
+        assert_eq!(out[0].height(), 1200);
+    }
+
+    #[test]
+    fn raw_embedded_preview_keeps_first_stage_if_full_decode_fails() {
+        let path = Path::new("/tmp/test.raf");
+        let out = load_preview_stages_with_hooks(
+            path,
+            2000,
+            |_path| {
+                Ok((
+                    DynamicImage::ImageRgba8(ImageBuffer::from_pixel(1600, 1066, Rgba([1, 2, 3, 255]))),
+                    crate::thumbnail::PreviewSource::Embedded,
+                ))
+            },
+            |_path| anyhow::bail!("full decode failed"),
+        )
+        .expect("staged preview load should keep embedded stage");
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].width(), 1600);
+        assert_eq!(out[0].height(), 1066);
     }
 }
