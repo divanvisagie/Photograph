@@ -34,7 +34,7 @@ fn parse_preview_backend(value: &str) -> PreviewBackend {
     match value.trim().to_ascii_lowercase().as_str() {
         "cpu" => PreviewBackend::Cpu,
         "auto" => PreviewBackend::Auto,
-        "gpu" | "gpu_spike" | "spike" | "wgpu" => PreviewBackend::GpuSpike,
+        "gpu" | "gpu_pipeline" | "gpu_spike" | "spike" | "wgpu" => PreviewBackend::GpuPipeline,
         _ => PreviewBackend::Auto,
     }
 }
@@ -49,8 +49,30 @@ fn resolve_preview_backend(config: &AppConfig) -> PreviewBackend {
     PreviewBackend::Auto
 }
 
+fn effective_preview_backend(
+    requested: PreviewBackend,
+    allow_debug_cpu_fallback: bool,
+) -> PreviewBackend {
+    if requested == PreviewBackend::Cpu && !allow_debug_cpu_fallback {
+        PreviewBackend::GpuPipeline
+    } else {
+        requested
+    }
+}
+
+fn enforce_runtime_gpu_policy(allow_debug_cpu_fallback: bool) {
+    if processing::gpu_pipeline::is_available() || allow_debug_cpu_fallback {
+        return;
+    }
+    eprintln!(
+        "photograph: no compatible discrete Vulkan GPU detected. Set {}=1 for debug CPU fallback.",
+        processing::gpu_pipeline::DEBUG_ALLOW_CPU_FALLBACK_ENV
+    );
+    std::process::exit(2);
+}
+
 fn report_preview_backend(backend: PreviewBackend) {
-    let status = processing::gpu_spike::runtime_status();
+    let status = processing::gpu_pipeline::runtime_status();
     let adapter_desc = match (
         status.adapter_name.as_deref(),
         status.adapter_backend.as_deref(),
@@ -61,24 +83,29 @@ fn report_preview_backend(backend: PreviewBackend) {
     };
     match backend {
         PreviewBackend::Cpu => {
-            eprintln!("photograph: preview backend = cpu (forced)");
+            eprintln!("photograph: preview backend = cpu (debug fallback mode)");
         }
         PreviewBackend::Auto => {
             if status.available {
                 eprintln!(
-                    "photograph: preview backend = auto (gpu_spike active on {})",
+                    "photograph: preview backend = auto (gpu_pipeline active on {})",
                     adapter_desc
                 );
             } else {
-                eprintln!("photograph: preview backend = auto (gpu unavailable; cpu fallback)");
+                eprintln!(
+                    "photograph: preview backend = auto (gpu unavailable; debug cpu fallback)"
+                );
             }
         }
-        PreviewBackend::GpuSpike => {
+        PreviewBackend::GpuPipeline => {
             if status.available {
-                eprintln!("photograph: preview backend = gpu_spike ({})", adapter_desc);
+                eprintln!(
+                    "photograph: preview backend = gpu_pipeline ({})",
+                    adapter_desc
+                );
             } else {
                 eprintln!(
-                    "photograph: preview backend = gpu_spike requested, cpu fallback engaged"
+                    "photograph: preview backend = gpu_pipeline requested, but gpu unavailable"
                 );
             }
         }
@@ -91,7 +118,17 @@ fn main() -> eframe::Result {
         .init();
 
     let config = AppConfig::load();
-    let preview_backend = resolve_preview_backend(&config);
+    let requested_preview_backend = resolve_preview_backend(&config);
+    let allow_debug_cpu_fallback = processing::gpu_pipeline::allow_debug_cpu_fallback();
+    let preview_backend =
+        effective_preview_backend(requested_preview_backend, allow_debug_cpu_fallback);
+    if requested_preview_backend == PreviewBackend::Cpu && preview_backend != PreviewBackend::Cpu {
+        eprintln!(
+            "photograph: cpu backend requires {}=1; using gpu_pipeline policy",
+            processing::gpu_pipeline::DEBUG_ALLOW_CPU_FALLBACK_ENV
+        );
+    }
+    enforce_runtime_gpu_policy(allow_debug_cpu_fallback);
     report_preview_backend(preview_backend);
 
     let width = config.window_width.unwrap_or(1200.0);
@@ -115,19 +152,39 @@ fn main() -> eframe::Result {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_preview_backend;
+    use super::{effective_preview_backend, parse_preview_backend};
     use crate::viewer::PreviewBackend;
 
     #[test]
     fn parse_preview_backend_handles_supported_values() {
         assert_eq!(parse_preview_backend("cpu"), PreviewBackend::Cpu);
         assert_eq!(parse_preview_backend("auto"), PreviewBackend::Auto);
-        assert_eq!(parse_preview_backend("gpu"), PreviewBackend::GpuSpike);
+        assert_eq!(parse_preview_backend("gpu"), PreviewBackend::GpuPipeline);
+        assert_eq!(
+            parse_preview_backend("gpu_pipeline"),
+            PreviewBackend::GpuPipeline
+        );
+        assert_eq!(
+            parse_preview_backend("gpu_spike"),
+            PreviewBackend::GpuPipeline
+        );
     }
 
     #[test]
     fn parse_preview_backend_defaults_to_auto_for_unknown_values() {
         assert_eq!(parse_preview_backend("unknown"), PreviewBackend::Auto);
+    }
+
+    #[test]
+    fn cpu_backend_requires_debug_fallback_flag() {
+        assert_eq!(
+            effective_preview_backend(PreviewBackend::Cpu, false),
+            PreviewBackend::GpuPipeline
+        );
+        assert_eq!(
+            effective_preview_backend(PreviewBackend::Cpu, true),
+            PreviewBackend::Cpu
+        );
     }
 
     #[test]

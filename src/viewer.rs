@@ -37,11 +37,19 @@ enum BgResult {
     },
 }
 
+fn scale_to_cap(img: DynamicImage, cap: u32) -> DynamicImage {
+    if img.width() > cap || img.height() > cap {
+        img.thumbnail(cap, cap)
+    } else {
+        img
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreviewBackend {
     Cpu,
     Auto,
-    GpuSpike,
+    GpuPipeline,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -277,17 +285,30 @@ impl Viewer {
         let ctx2 = ctx.clone();
         let cap = self.preview_max;
         std::thread::spawn(move || {
-            match crate::thumbnail::open_image_for_preview(&path) {
-                Ok(img) => {
-                    let preview = if img.width() > cap || img.height() > cap {
-                        img.thumbnail(cap, cap)
-                    } else {
-                        img
-                    };
-                    let _ = tx.send(BgResult::Loaded { path, img: preview });
+            let load_path = path.clone();
+            match crate::thumbnail::open_image_for_preview_with_source(&load_path) {
+                Ok((img, source)) => {
+                    let preview = scale_to_cap(img, cap);
+                    let _ = tx.send(BgResult::Loaded {
+                        path: load_path.clone(),
+                        img: preview,
+                    });
+
+                    // For RAW files loaded from embedded preview payloads, schedule
+                    // a second-stage full decode to converge toward full-quality preview.
+                    if crate::thumbnail::is_raw_image(&load_path)
+                        && source == crate::thumbnail::PreviewSource::Embedded
+                    {
+                        if let Ok(full) = crate::thumbnail::open_image(&load_path) {
+                            let _ = tx.send(BgResult::Loaded {
+                                path: load_path.clone(),
+                                img: scale_to_cap(full, cap),
+                            });
+                        }
+                    }
                 }
                 Err(_) => {
-                    let _ = tx.send(BgResult::LoadFailed(path));
+                    let _ = tx.send(BgResult::LoadFailed(load_path));
                 }
             }
             ctx2.request_repaint();
@@ -1162,11 +1183,13 @@ fn process_preview_with_backend(
     state: &EditState,
     preview_backend: PreviewBackend,
 ) -> DynamicImage {
+    let allow_cpu_fallback = crate::processing::gpu_pipeline::allow_debug_cpu_fallback();
     process_preview_with_backend_and_gpu_hook(
         source,
         state,
         preview_backend,
-        crate::processing::gpu_spike::try_apply,
+        allow_cpu_fallback,
+        crate::processing::gpu_pipeline::try_apply,
     )
 }
 
@@ -1174,15 +1197,30 @@ fn process_preview_with_backend_and_gpu_hook<F>(
     source: &DynamicImage,
     state: &EditState,
     preview_backend: PreviewBackend,
+    allow_cpu_fallback: bool,
     gpu_apply: F,
 ) -> DynamicImage
 where
     F: Fn(&DynamicImage, &EditState) -> Option<DynamicImage>,
 {
+    let apply_gpu_or_fallback = |source: &DynamicImage, state: &EditState| match gpu_apply(
+        source, state,
+    ) {
+        Some(img) => img,
+        None if allow_cpu_fallback => crate::processing::transform::apply(source, state),
+        None => panic!(
+            "photograph: gpu pipeline failed while CPU fallback is disabled (set {}=1 for debug fallback)",
+            crate::processing::gpu_pipeline::DEBUG_ALLOW_CPU_FALLBACK_ENV
+        ),
+    };
+
     match preview_backend {
-        PreviewBackend::Cpu => crate::processing::transform::apply(source, state),
-        PreviewBackend::Auto | PreviewBackend::GpuSpike => gpu_apply(source, state)
-            .unwrap_or_else(|| crate::processing::transform::apply(source, state)),
+        PreviewBackend::Cpu if allow_cpu_fallback => {
+            crate::processing::transform::apply(source, state)
+        }
+        PreviewBackend::Cpu | PreviewBackend::Auto | PreviewBackend::GpuPipeline => {
+            apply_gpu_or_fallback(source, state)
+        }
     }
 }
 
@@ -1976,8 +2014,8 @@ mod tests {
 
     use super::{
         INTERACTIVE_PREVIEW_MAX, PreviewBackend, bump_requested_generation_for_pending_changes,
-        downscale_for_interactive, edit_state_signature, process_preview_with_backend,
-        process_preview_with_backend_and_gpu_hook, source_signature,
+        downscale_for_interactive, edit_state_signature, process_preview_with_backend_and_gpu_hook,
+        source_signature,
     };
     use crate::state::EditState;
 
@@ -2028,18 +2066,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_state_in_auto_mode_falls_back_to_cpu() {
-        let img = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(4, 4, Rgba([32, 64, 128, 255])));
-        let mut state = EditState::default();
-        state.rotate = 90;
-
-        let expected = crate::processing::transform::apply(&img, &state);
-        let out = process_preview_with_backend(&img, &state, PreviewBackend::Auto);
-        assert_eq!(out.to_rgba8().into_raw(), expected.to_rgba8().into_raw());
-    }
-
-    #[test]
-    fn auto_mode_falls_back_to_cpu_when_gpu_is_unavailable() {
+    fn auto_mode_uses_cpu_fallback_when_gpu_is_unavailable_and_debug_enabled() {
         let img = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(4, 4, Rgba([80, 90, 100, 255])));
         let mut state = EditState::default();
         state.exposure = 0.3;
@@ -2050,13 +2077,31 @@ mod tests {
             &img,
             &state,
             PreviewBackend::Auto,
+            true,
             |_source, _state| None,
         );
         assert_eq!(out.to_rgba8().into_raw(), expected.to_rgba8().into_raw());
     }
 
     #[test]
-    fn cpu_mode_bypasses_gpu_hook() {
+    fn auto_mode_panics_when_gpu_is_unavailable_and_debug_fallback_is_disabled() {
+        let img = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(4, 4, Rgba([80, 90, 100, 255])));
+        let state = EditState::default();
+
+        let result = std::panic::catch_unwind(|| {
+            process_preview_with_backend_and_gpu_hook(
+                &img,
+                &state,
+                PreviewBackend::Auto,
+                false,
+                |_source, _state| None,
+            )
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cpu_mode_uses_cpu_only_when_debug_fallback_enabled() {
         let img = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(3, 3, Rgba([20, 30, 40, 255])));
         let mut state = EditState::default();
         state.exposure = 0.4;
@@ -2066,9 +2111,31 @@ mod tests {
             &img,
             &state,
             PreviewBackend::Cpu,
+            true,
             |_source, _state| panic!("gpu path should not be called in cpu mode"),
         );
         assert_eq!(out.to_rgba8().into_raw(), expected.to_rgba8().into_raw());
+    }
+
+    #[test]
+    fn cpu_mode_uses_gpu_path_when_debug_fallback_is_disabled() {
+        let img = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(3, 3, Rgba([20, 30, 40, 255])));
+        let state = EditState::default();
+
+        let out = process_preview_with_backend_and_gpu_hook(
+            &img,
+            &state,
+            PreviewBackend::Cpu,
+            false,
+            |_source, _state| {
+                Some(DynamicImage::ImageRgba8(ImageBuffer::from_pixel(
+                    3,
+                    3,
+                    Rgba([200, 100, 50, 255]),
+                )))
+            },
+        );
+        assert_eq!(out.to_rgba8().get_pixel(0, 0).0, [200, 100, 50, 255]);
     }
 
     #[test]

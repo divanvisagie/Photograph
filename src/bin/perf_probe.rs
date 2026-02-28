@@ -21,7 +21,7 @@ const RAW_EXTS: &[&str] = &["raf", "dng", "nef", "cr2", "arw"];
 enum ProbeBackend {
     Cpu,
     Auto,
-    GpuSpike,
+    GpuPipeline,
 }
 
 impl ProbeBackend {
@@ -29,7 +29,7 @@ impl ProbeBackend {
         match raw.unwrap_or("auto").trim().to_ascii_lowercase().as_str() {
             "cpu" => ProbeBackend::Cpu,
             "auto" => ProbeBackend::Auto,
-            "gpu" | "gpu_spike" | "wgpu" | "spike" => ProbeBackend::GpuSpike,
+            "gpu" | "gpu_pipeline" | "gpu_spike" | "wgpu" | "spike" => ProbeBackend::GpuPipeline,
             _ => ProbeBackend::Auto,
         }
     }
@@ -38,7 +38,7 @@ impl ProbeBackend {
         match self {
             ProbeBackend::Cpu => "cpu",
             ProbeBackend::Auto => "auto",
-            ProbeBackend::GpuSpike => "gpu_spike",
+            ProbeBackend::GpuPipeline => "gpu_pipeline",
         }
     }
 }
@@ -102,12 +102,24 @@ fn apply_preview_backend(
     preview: &image::DynamicImage,
     state: &state::EditState,
     backend: ProbeBackend,
-) -> image::DynamicImage {
+) -> Result<image::DynamicImage> {
+    let allow_cpu_fallback = processing::gpu_pipeline::allow_debug_cpu_fallback();
+
     match backend {
-        ProbeBackend::Cpu => processing::transform::apply(preview, state),
-        ProbeBackend::Auto | ProbeBackend::GpuSpike => {
-            processing::gpu_spike::try_apply(preview, state)
-                .unwrap_or_else(|| processing::transform::apply(preview, state))
+        ProbeBackend::Cpu if allow_cpu_fallback => Ok(processing::transform::apply(preview, state)),
+        ProbeBackend::Cpu => anyhow::bail!(
+            "cpu backend requires {}=1",
+            processing::gpu_pipeline::DEBUG_ALLOW_CPU_FALLBACK_ENV
+        ),
+        ProbeBackend::Auto | ProbeBackend::GpuPipeline => {
+            match processing::gpu_pipeline::try_apply(preview, state) {
+                Some(img) => Ok(img),
+                None if allow_cpu_fallback => Ok(processing::transform::apply(preview, state)),
+                None => anyhow::bail!(
+                    "gpu pipeline unavailable/failed and CPU fallback is disabled (set {}=1 for debug fallback)",
+                    processing::gpu_pipeline::DEBUG_ALLOW_CPU_FALLBACK_ENV
+                ),
+            }
         }
     }
 }
@@ -118,13 +130,21 @@ fn main() -> Result<()> {
     let dir = args
         .next()
         .map(PathBuf::from)
-        .context("usage: perf_probe <raw-dir> [count] [auto|cpu|gpu_spike]")?;
+        .context("usage: perf_probe <raw-dir> [count] [auto|cpu|gpu_pipeline]")?;
     let count = args
         .next()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(20);
     let backend = ProbeBackend::from_arg(args.next().as_deref());
-    let gpu_status = processing::gpu_spike::runtime_status();
+    let gpu_status = processing::gpu_pipeline::runtime_status();
+    let allow_cpu_fallback = processing::gpu_pipeline::allow_debug_cpu_fallback();
+
+    if !gpu_status.available && !allow_cpu_fallback {
+        anyhow::bail!(
+            "no compatible discrete Vulkan GPU detected (set {}=1 for debug CPU fallback)",
+            processing::gpu_pipeline::DEBUG_ALLOW_CPU_FALLBACK_ENV
+        );
+    }
 
     let files = list_raw_files(&dir, count)?;
     if files.is_empty() {
@@ -136,7 +156,7 @@ fn main() -> Result<()> {
         dir.display(),
         backend.label()
     );
-    if matches!(backend, ProbeBackend::Auto | ProbeBackend::GpuSpike) {
+    if matches!(backend, ProbeBackend::Auto | ProbeBackend::GpuPipeline) {
         let adapter_desc = match (
             gpu_status.adapter_name.as_deref(),
             gpu_status.adapter_backend.as_deref(),
@@ -146,11 +166,11 @@ fn main() -> Result<()> {
             _ => "n/a".to_string(),
         };
         eprintln!(
-            "gpu_spike availability: {}{}",
+            "gpu_pipeline availability: {}{}",
             if gpu_status.available {
                 "available"
             } else {
-                "unavailable (cpu fallback)"
+                "unavailable (debug cpu fallback)"
             },
             if gpu_status.available {
                 format!(", adapter={}", adapter_desc)
@@ -176,7 +196,7 @@ fn main() -> Result<()> {
             .with_context(|| format!("preview open failed for {}", path.display()))?;
         let preview = ensure_preview_size(img);
         let t0 = Instant::now();
-        let processed = apply_preview_backend(&preview, &state, backend);
+        let processed = apply_preview_backend(&preview, &state, backend)?;
         let _raw = processed.to_rgba8().into_raw();
         slider_samples.push(t0.elapsed().as_secs_f64() * 1000.0);
     }

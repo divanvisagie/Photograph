@@ -421,7 +421,18 @@ fn render_single_image(
     options: RenderOptions,
 ) -> anyhow::Result<()> {
     let input = crate::thumbnail::open_image(source_path)?;
-    let processed = crate::processing::transform::apply(&input, state);
+    let processed = match crate::processing::gpu_pipeline::try_apply(&input, state) {
+        Some(img) => img,
+        None if crate::processing::gpu_pipeline::allow_debug_cpu_fallback() => {
+            crate::processing::transform::apply(&input, state)
+        }
+        None => {
+            anyhow::bail!(
+                "gpu pipeline render failed while CPU fallback is disabled (set {}=1 for debug fallback)",
+                crate::processing::gpu_pipeline::DEBUG_ALLOW_CPU_FALLBACK_ENV
+            );
+        }
+    };
     let rendered = apply_export_resize(processed, options);
     write_rendered_image(&rendered, output_path, options)?;
     Ok(())
@@ -1009,7 +1020,7 @@ impl eframe::App for PhotographApp {
 }
 
 fn preview_status_summary(backend: PreviewBackend) -> (String, Option<String>, Option<GpuVendor>) {
-    let status = crate::processing::gpu_spike::runtime_status();
+    let status = crate::processing::gpu_pipeline::runtime_status();
     let adapter_desc = match (
         status.adapter_name.as_deref(),
         status.adapter_backend.as_deref(),
@@ -1026,8 +1037,8 @@ fn preview_status_summary(backend: PreviewBackend) -> (String, Option<String>, O
         .to_string();
     let (label, details) = match backend {
         PreviewBackend::Cpu => (
-            "GPU accel: off (cpu mode)".to_string(),
-            Some("Preview backend forced to CPU; GPU acceleration is disabled.".to_string()),
+            "GPU accel: off (debug cpu mode)".to_string(),
+            Some("CPU preview backend is active in debug fallback mode.".to_string()),
         ),
         PreviewBackend::Auto => {
             if status.available {
@@ -1037,25 +1048,25 @@ fn preview_status_summary(backend: PreviewBackend) -> (String, Option<String>, O
                 )
             } else {
                 (
-                    "GPU accel: off (auto fallback)".to_string(),
+                    "GPU accel: off (debug cpu fallback)".to_string(),
                     Some(
-                        "auto mode selected, but no usable GPU backend was initialized."
+                        "auto mode selected and GPU is unavailable; debug CPU fallback is active."
                             .to_string(),
                     ),
                 )
             }
         }
-        PreviewBackend::GpuSpike => {
+        PreviewBackend::GpuPipeline => {
             if status.available {
                 (
                     format!("GPU accel: on [{}]", adapter_desc),
-                    Some(format!("gpu_spike mode active; driver: {}", driver)),
+                    Some(format!("gpu_pipeline mode active; driver: {}", driver)),
                 )
             } else {
                 (
-                    "GPU accel: off (gpu fallback)".to_string(),
+                    "GPU accel: off (gpu unavailable)".to_string(),
                     Some(
-                        "gpu_spike requested, but GPU init failed; running CPU fallback."
+                        "gpu_pipeline requested, but no compatible GPU was initialized."
                             .to_string(),
                     ),
                 )
@@ -1094,7 +1105,7 @@ impl GpuVendor {
     }
 }
 
-fn detect_gpu_vendor(status: &crate::processing::gpu_spike::RuntimeStatus) -> Option<GpuVendor> {
+fn detect_gpu_vendor(status: &crate::processing::gpu_pipeline::RuntimeStatus) -> Option<GpuVendor> {
     let vendor_id = status.adapter_vendor_id.unwrap_or_default();
     if vendor_id == 0x10DE {
         return Some(GpuVendor::Nvidia);

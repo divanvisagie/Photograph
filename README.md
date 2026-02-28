@@ -69,13 +69,19 @@ Example:
 
 ```toml
 browse_path = "/path/to/photos"
-preview_backend = "auto" # auto | cpu | gpu | gpu_spike | wgpu
+preview_backend = "auto" # auto | gpu | gpu_pipeline | cpu (debug only)
 ```
 
 You can also override preview backend at runtime:
 
 ```bash
-PHOTOGRAPH_PREVIEW_BACKEND=cpu cargo run --bin photograph
+PHOTOGRAPH_PREVIEW_BACKEND=gpu_pipeline cargo run --bin photograph
+```
+
+CPU fallback is debug-only and requires:
+
+```bash
+PHOTOGRAPH_DEBUG_ALLOW_CPU_FALLBACK=1 PHOTOGRAPH_PREVIEW_BACKEND=cpu cargo run --bin photograph
 ```
 
 ## Packaging
@@ -108,15 +114,28 @@ macOS bundle metadata lives under `packaging/macos/`.
 There is a CLI benchmark helper for raw preview/export throughput:
 
 ```bash
-cargo run --bin perf_probe -- /path/to/raws [count] [auto|cpu|gpu_spike]
+cargo run --bin perf_probe -- /path/to/raws [count] [auto|cpu|gpu_pipeline]
 ```
 
+`cpu` mode in `perf_probe` also requires `PHOTOGRAPH_DEBUG_ALLOW_CPU_FALLBACK=1`.
+
 It prints `METRIC ...` lines for preview latency and export throughput.
+
+## Architecture Docs
+
+Pipeline and architecture decisions are documented in `/docs`:
+
+- [Pipeline Architecture](docs/pipeline-architecture.md)
+- [Pipeline Decisions (ADR-style)](docs/pipeline-decisions.md)
+- [RAW Load Latency Notes](docs/raw-load-latency.md)
+
+These docs include Mermaid diagrams (flowcharts and sequence diagrams) for preview processing, export processing, and backend policy enforcement.
 
 ## Project Layout
 
 - `src/` application code (`browser`, `viewer`, `editor`, processing pipeline)
 - `src/bin/perf_probe.rs` benchmark helper
+- `docs/` architecture notes and design decisions
 - `assets/` embedded app assets (including icon)
 - `packaging/` Linux/macOS packaging files
 - `Makefile` dev/build/install/package commands
