@@ -1786,25 +1786,18 @@ fn show_color_section(
         }
     });
 
-    paint_hue_bar(ui, 0.0, 180.0);
     ui.horizontal(|ui| {
         ui.label("Hue Shift");
-        let resp = ui.add(
-            egui::Slider::new(&mut state.hue_shift, -180.0_f32..=180.0_f32)
-                .suffix("°")
-                .fixed_decimals(1)
-                .clamping(egui::SliderClamping::Always),
-        );
-        if resp.changed() {
-            *needs_process = true;
-            *last_slider_change = Some(Instant::now());
-        }
         if state.hue_shift != 0.0 && ui.small_button("↺").clicked() {
             state.hue_shift = 0.0;
             *needs_process = true;
             *last_slider_change = None;
         }
     });
+    if hue_slider(ui, &mut state.hue_shift, 0.0, 180.0) {
+        *needs_process = true;
+        *last_slider_change = Some(Instant::now());
+    }
 
     ui.add_space(6.0);
     ui.label(egui::RichText::new("Selective Color").strong());
@@ -1819,20 +1812,10 @@ fn show_color_section(
         egui::Frame::group(ui.style()).fill(bg).show(ui, |ui| {
             egui::CollapsingHeader::new(egui::RichText::new(*label).strong().color(label_color))
                 .show(ui, |ui| {
-                    paint_hue_bar(ui, SELECTIVE_CENTER_HUES[idx], 45.0);
-                    ui.horizontal(|ui| {
-                        ui.label("Hue");
-                        let resp = ui.add(
-                            egui::Slider::new(&mut adj.hue, -45.0_f32..=45.0_f32)
-                                .suffix("°")
-                                .fixed_decimals(1)
-                                .clamping(egui::SliderClamping::Always),
-                        );
-                        if resp.changed() {
-                            *needs_process = true;
-                            *last_slider_change = Some(Instant::now());
-                        }
-                    });
+                    if hue_slider(ui, &mut adj.hue, SELECTIVE_CENTER_HUES[idx], 45.0) {
+                        *needs_process = true;
+                        *last_slider_change = Some(Instant::now());
+                    }
                     ui.horizontal(|ui| {
                         ui.label("Saturation");
                         let resp = ui.add(
@@ -1991,15 +1974,36 @@ fn hue_to_rgb(hue_deg: f32) -> egui::Color32 {
     )
 }
 
-fn paint_hue_bar(ui: &mut egui::Ui, center_hue: f32, half_range: f32) {
-    let bar_height = 6.0;
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), bar_height),
-        egui::Sense::hover(),
-    );
-    if !ui.is_rect_visible(rect) {
-        return;
+/// Custom hue slider: a gradient-filled track with a draggable handle.
+/// `value` is the current offset in degrees (e.g. -45..=45 or -180..=180).
+/// `center_hue` is the base hue in degrees. `half_range` is half the slider range.
+/// Returns true if the value changed.
+fn hue_slider(ui: &mut egui::Ui, value: &mut f32, center_hue: f32, half_range: f32) -> bool {
+    let track_height = 14.0;
+    let handle_radius = 7.0;
+    let desired = egui::vec2(ui.available_width(), track_height);
+    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
+
+    let old_value = *value;
+
+    if response.dragged() || response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let t = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+            *value = -half_range + t * 2.0 * half_range;
+            if value.abs() < half_range * 0.02 {
+                *value = 0.0;
+            }
+            *value = (*value * 10.0).round() / 10.0;
+        }
     }
+
+    let changed = (*value - old_value).abs() > 0.001;
+
+    if !ui.is_rect_visible(rect) {
+        return changed;
+    }
+
+    // Paint gradient track
     let num_segments = 24;
     let mut mesh = egui::Mesh::default();
     for i in 0..num_segments {
@@ -2032,15 +2036,53 @@ fn paint_hue_bar(ui: &mut egui::Ui, center_hue: f32, half_range: f32) {
             uv: egui::epaint::WHITE_UV,
             color: c0,
         });
-        mesh.indices.extend_from_slice(&[idx, idx + 1, idx + 2, idx, idx + 2, idx + 3]);
+        mesh.indices
+            .extend_from_slice(&[idx, idx + 1, idx + 2, idx, idx + 2, idx + 3]);
     }
     ui.painter().add(egui::Shape::mesh(mesh));
-    ui.painter().rect_stroke(
-        rect,
-        egui::Rounding::same(2),
-        egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
-        egui::StrokeKind::Middle,
+
+    // Center tick mark
+    let center_x = rect.left() + rect.width() * 0.5;
+    ui.painter().line_segment(
+        [
+            egui::pos2(center_x, rect.top()),
+            egui::pos2(center_x, rect.bottom()),
+        ],
+        egui::Stroke::new(1.0, egui::Color32::from_white_alpha(80)),
     );
+
+    // Handle
+    let t = (*value + half_range) / (2.0 * half_range);
+    let handle_x = rect.left() + t * rect.width();
+    let handle_center = egui::pos2(handle_x, rect.center().y);
+
+    ui.painter().circle_filled(
+        handle_center + egui::vec2(0.0, 1.0),
+        handle_radius + 1.0,
+        egui::Color32::from_black_alpha(80),
+    );
+
+    let handle_color = if response.dragged() {
+        egui::Color32::WHITE
+    } else if response.hovered() {
+        egui::Color32::from_gray(240)
+    } else {
+        egui::Color32::from_gray(220)
+    };
+    ui.painter()
+        .circle_filled(handle_center, handle_radius, handle_color);
+    ui.painter().circle_stroke(
+        handle_center,
+        handle_radius,
+        egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
+    );
+
+    // Show value on hover/drag via egui tooltip (no manual painting above track)
+    if response.hovered() || response.dragged() {
+        response.on_hover_text(format!("{:.1}°", *value));
+    }
+
+    changed
 }
 
 fn selective_base_color(idx: usize) -> egui::Color32 {
