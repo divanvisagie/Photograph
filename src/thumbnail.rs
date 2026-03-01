@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use image::DynamicImage;
+use image::{DynamicImage, ImageBuffer};
+use rawler::imgop::develop::{Intermediate, ProcessingStep, RawDevelop};
+
+use crate::processing::highlights;
 
 pub const THUMB_SIZE: u32 = 300;
 
@@ -48,11 +51,61 @@ pub fn open_image(path: &Path) -> anyhow::Result<DynamicImage> {
     }
 
     let raw = rawler::decode_file(path)?;
-    let develop = rawler::imgop::develop::RawDevelop::default();
-    let intermediate = develop.develop_intermediate(&raw)?;
-    intermediate
-        .to_dynamic_image()
-        .ok_or_else(|| anyhow::anyhow!("raw develop produced invalid image"))
+    develop_raw_with_recovery(&raw)
+}
+
+/// Develop a RAW image with highlight recovery.
+///
+/// Uses a custom pipeline that skips rawler's sRGB gamma step so we can
+/// operate on linear f32 data. After development:
+/// 1. Apply highlight reconstruction on the linear RGB channels.
+/// 2. Apply sRGB gamma.
+/// 3. Convert to a standard `DynamicImage`.
+fn develop_raw_with_recovery(raw: &rawler::RawImage) -> anyhow::Result<DynamicImage> {
+    let develop = RawDevelop {
+        steps: vec![
+            ProcessingStep::Rescale,
+            ProcessingStep::Demosaic,
+            ProcessingStep::CropActiveArea,
+            ProcessingStep::WhiteBalance,
+            ProcessingStep::Calibrate,
+            ProcessingStep::CropDefault,
+            // SRgb intentionally omitted — applied after highlight recovery.
+        ],
+    };
+
+    let intermediate = develop.develop_intermediate(raw)?;
+
+    match intermediate {
+        Intermediate::ThreeColor(mut pixels) => {
+            highlights::recover(pixels.pixels_mut());
+            pixels.for_each(rawler::imgop::srgb::srgb_apply_gamma_n);
+            let w = pixels.width as u32;
+            let h = pixels.height as u32;
+            let data = rawler::imgop::convert_from_f32_scaled_u16(&pixels.flatten(), 0, u16::MAX);
+            ImageBuffer::from_raw(w, h, data)
+                .map(DynamicImage::ImageRgb16)
+                .ok_or_else(|| anyhow::anyhow!("raw develop produced invalid image"))
+        }
+        Intermediate::Monochrome(mut pixels) => {
+            pixels.for_each(rawler::imgop::srgb::srgb_apply_gamma);
+            let w = pixels.width as u32;
+            let h = pixels.height as u32;
+            let data = rawler::imgop::convert_from_f32_scaled_u16(&pixels.data, 0, u16::MAX);
+            ImageBuffer::from_raw(w, h, data)
+                .map(DynamicImage::ImageLuma16)
+                .ok_or_else(|| anyhow::anyhow!("raw develop produced invalid image"))
+        }
+        Intermediate::FourColor(mut pixels) => {
+            pixels.for_each(rawler::imgop::srgb::srgb_apply_gamma_n);
+            let w = pixels.width as u32;
+            let h = pixels.height as u32;
+            let data = rawler::imgop::convert_from_f32_scaled_u16(&pixels.flatten(), 0, u16::MAX);
+            ImageBuffer::from_raw(w, h, data)
+                .map(DynamicImage::ImageRgba16)
+                .ok_or_else(|| anyhow::anyhow!("raw develop produced invalid image"))
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
