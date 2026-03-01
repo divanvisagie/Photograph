@@ -146,8 +146,8 @@ flowchart LR
 
 The highlight recovery pass (`src/processing/highlights.rs`) runs two operations:
 
-1. **Channel reconstruction** — For pixels where 1 or 2 channels are clipped (≥ 0.99) but at least one is not, the clipped channels are replaced with the average of the unclipped channel(s). This restores color gradation in overexposed regions.
-2. **Soft-knee compression** — An exponential curve maps values above 0.85 smoothly toward 1.0, preventing hard clipping artifacts.
+1. **Channel reconstruction** — For pixels where 1 or 2 channels are clipped (>= 0.99) but at least one is not, clipped channels are rebuilt from a luminance/chroma decomposition using unclipped-channel luminance as the anchor. This preserves highlight color bias better than neutral averaging.
+2. **Near-clip shoulder** — An exponential shoulder rolloff maps values above 0.95 gently toward 1.0, reducing hard clipping while leaving broader bright tones largely unchanged.
 
 Both preview (Stage B full decode via `open_image`) and export use the same develop function (`develop_raw_with_recovery` in `thumbnail.rs`), maintaining parity per ADR-003.
 

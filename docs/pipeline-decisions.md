@@ -57,10 +57,10 @@ This page records high-impact architecture decisions for the image pipeline usin
 
 - Context: The default `RawDevelop` pipeline applies sRGB gamma then converts to u16, clipping any channel values above 1.0 in linear space. In overexposed RAW regions where only some channels are sensor-saturated, the unclipped channels carry recoverable scene information that is lost by this clipping.
 - Decision: Use a custom `RawDevelop` pipeline that omits the `SRgb` step, apply highlight reconstruction on the linear f32 intermediate data, then apply sRGB gamma before conversion to `DynamicImage`.
-- Why: Operating on linear f32 data between calibration and gamma allows reconstruction of partially-clipped highlights. Clipped channels are replaced using brightness from unclipped channels, and a soft-knee compressor maps the extended range smoothly to [0, 1]. This produces visible improvement in highlight gradation without changing the downstream GPU/CPU processing pipeline.
+- Why: Operating on linear f32 data between calibration and gamma allows reconstruction of partially-clipped highlights. Clipped channels are rebuilt from a luminance/chroma decomposition so warm/cool highlight bias is preserved better, and a near-clip shoulder rolloff reduces hard clipping without darkening broad bright tones. This improves highlight gradation without changing the downstream GPU/CPU processing pipeline.
 - Algorithm: Two-pass over linear RGB pixels:
-  1. **Channel reconstruction**: Pixels with 1 or 2 channels above clip threshold (0.99) have those channels replaced with the average of the remaining unclipped channel(s).
-  2. **Soft-knee compression**: An exponential deceleration curve maps values above the knee point (0.85) smoothly into [0, 1].
+  1. **Channel reconstruction**: Pixels with 1 or 2 channels above clip threshold (0.99) rebuild clipped channels from a luminance/chroma decomposition anchored by unclipped-channel luminance.
+  2. **Near-clip shoulder**: An exponential shoulder rolloff engages only above 0.95, compressing near-clip values gently into [0, 1].
 - Implementation:
   - `src/processing/highlights.rs` (recovery algorithm)
   - `src/thumbnail.rs` (`develop_raw_with_recovery`)
