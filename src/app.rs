@@ -152,13 +152,124 @@ pub struct PhotographApp {
     config: AppConfig,
 }
 
+fn configure_visuals(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::dark();
+
+    // Yaru-dark backgrounds
+    let window_bg = egui::Color32::from_rgb(0x2C, 0x2C, 0x2C);
+    let extreme_bg = egui::Color32::from_rgb(0x1D, 0x1D, 0x1D);
+    let faint_bg = egui::Color32::from_rgb(0x27, 0x27, 0x27);
+
+    // Widget backgrounds
+    let button_normal = egui::Color32::from_rgb(0x3C, 0x3C, 0x3C);
+    let button_hover = egui::Color32::from_rgb(0x41, 0x41, 0x41);
+    let button_active = egui::Color32::from_rgb(0x1B, 0x1B, 0x1B);
+    let button_disabled = egui::Color32::from_rgb(0x2A, 0x2A, 0x2A);
+
+    // Text colors
+    let primary_text = egui::Color32::from_rgb(0xF7, 0xF7, 0xF7);
+    let disabled_text = egui::Color32::from_rgb(0x92, 0x92, 0x92);
+
+    // Accent & semantic
+    let accent = egui::Color32::from_rgb(0xE9, 0x54, 0x20); // Ubuntu orange
+    let border = egui::Color32::from_rgb(0x13, 0x13, 0x13);
+    let focus_ring = egui::Color32::from_rgb(0xEF, 0x86, 0x61);
+
+    let rounding = egui::CornerRadius::same(6);
+
+    // Panel & window fills
+    visuals.window_fill = window_bg;
+    visuals.panel_fill = window_bg;
+    visuals.extreme_bg_color = extreme_bg;
+    visuals.faint_bg_color = faint_bg;
+
+    // Text
+    visuals.override_text_color = Some(primary_text);
+
+    // Selection
+    visuals.selection.bg_fill = accent;
+    visuals.selection.stroke = egui::Stroke::new(1.0, primary_text);
+
+    // Hyperlinks & semantic colors
+    visuals.hyperlink_color = accent;
+    visuals.error_fg_color = egui::Color32::from_rgb(0xC7, 0x16, 0x2B);
+    visuals.warn_fg_color = egui::Color32::from_rgb(0xF9, 0x9B, 0x11);
+
+    // Window stroke
+    visuals.window_stroke = egui::Stroke::new(1.0, border);
+
+    // Widget styles — noninteractive (labels, disabled)
+    visuals.widgets.noninteractive.bg_fill = button_disabled;
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, border);
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, disabled_text);
+    visuals.widgets.noninteractive.corner_radius = rounding;
+
+    // Widget styles — inactive (enabled but not hovered)
+    visuals.widgets.inactive.bg_fill = button_normal;
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, border);
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, primary_text);
+    visuals.widgets.inactive.corner_radius = rounding;
+
+    // Widget styles — hovered
+    visuals.widgets.hovered.bg_fill = button_hover;
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, border);
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.5, focus_ring);
+    visuals.widgets.hovered.corner_radius = rounding;
+
+    // Widget styles — active (pressed)
+    visuals.widgets.active.bg_fill = button_active;
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, border);
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.5, primary_text);
+    visuals.widgets.active.corner_radius = rounding;
+
+    // Widget styles — open (e.g. combo box expanded)
+    visuals.widgets.open.bg_fill = button_hover;
+    visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, border);
+    visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, primary_text);
+    visuals.widgets.open.corner_radius = rounding;
+
+    ctx.set_visuals(visuals);
+}
+
+fn configure_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+
+    fonts.font_data.insert(
+        "Ubuntu".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/Ubuntu-R.ttf"
+        ))),
+    );
+    fonts.font_data.insert(
+        "UbuntuMono".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/UbuntuMono-R.ttf"
+        ))),
+    );
+
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "Ubuntu".to_owned());
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .insert(0, "UbuntuMono".to_owned());
+
+    ctx.set_fonts(fonts);
+}
+
 impl PhotographApp {
     /// Builds the app from persisted config and the selected preview backend.
     pub fn new(
-        _cc: &eframe::CreationContext<'_>,
+        cc: &eframe::CreationContext<'_>,
         config: AppConfig,
         preview_backend: PreviewBackend,
     ) -> Self {
+        configure_fonts(&cc.egui_ctx);
+        configure_visuals(&cc.egui_ctx);
         let browser = Browser::new(config.browse_path.clone());
         let output_dir = default_render_dir();
         let (preview_status_label, preview_status_details, preview_status_vendor) =
