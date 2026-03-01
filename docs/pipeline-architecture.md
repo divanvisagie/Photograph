@@ -158,6 +158,6 @@ Key files:
 
 ## Notes on Current Limits
 
-- GPU init is intentionally strict: Vulkan backend + discrete GPU.
+- GPU init is intentionally strict: Vulkan backend + non-CPU adapter (discrete preferred).
 - CPU fallback exists only for debug operation and controlled troubleshooting.
 - Very large images can exceed GPU texture limits; tiled GPU export is the next architectural step to keep large exports fully GPU-native.

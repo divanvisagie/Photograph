@@ -53,7 +53,7 @@ sudo apt install -y vulkan-tools
 vulkaninfo --summary
 ```
 
-If `vulkaninfo` cannot detect your discrete adapter, fix driver/runtime setup before running Photograph.
+If `vulkaninfo` cannot detect a Vulkan GPU adapter, fix driver/runtime setup before running Photograph.
 
 For `.deb` packaging from the `Makefile`:
 

@@ -6,18 +6,18 @@ This page records high-impact architecture decisions for the image pipeline usin
 
 | ID | Decision | Status |
 | --- | --- | --- |
-| ADR-001 | Require discrete Vulkan GPU for normal runtime | Accepted |
+| ADR-001 | Require Vulkan GPU (prefer discrete, allow integrated) for normal runtime | Accepted |
 | ADR-002 | Allow CPU fallback only with explicit debug env flag | Accepted |
 | ADR-003 | Use one GPU pipeline for both preview and export | Accepted |
 | ADR-004 | Keep async preview generation/cancellation semantics | Accepted |
 | ADR-005 | Use parity tests with guarded fill-skip behavior | Accepted |
 | ADR-006 | Apply highlight recovery during RAW develop, before sRGB gamma | Accepted |
 
-## ADR-001: Require Discrete Vulkan GPU
+## ADR-001: Require Vulkan GPU (Prefer Discrete, Allow Integrated)
 
-- Context: The project is optimized for a known Linux desktop profile with discrete graphics.
-- Decision: Initialize [`wgpu`](https://wgpu.rs/) with Vulkan-only backend and reject non-discrete adapters.
-- Why: Reduces variability and allows optimization against one hardware class.
+- Context: The project is optimized for Linux Vulkan execution, but integrated-GPU-only systems are still valid runtime targets.
+- Decision: Initialize [`wgpu`](https://wgpu.rs/) with Vulkan-only backend and select the best non-CPU adapter, preferring discrete when available.
+- Why: Keeps predictable GPU execution while avoiding unnecessary startup rejection on integrated-only systems.
 - Implementation: `src/processing/gpu_pipeline.rs` (`init_gpu_context`).
 
 ## ADR-002: CPU Fallback Is Debug-Only
@@ -70,7 +70,7 @@ This page records high-impact architecture decisions for the image pipeline usin
 
 ```mermaid
 flowchart TD
-    A[ADR-001: Discrete Vulkan GPU] --> B[ADR-002: Debug-only CPU fallback]
+    A[ADR-001: Vulkan GPU policy] --> B[ADR-002: Debug-only CPU fallback]
     A --> C[ADR-003: Shared preview/export GPU contract]
     C --> E[ADR-005: Strong parity checks]
     D[ADR-004: Generation cancellation] --> C
@@ -80,6 +80,6 @@ flowchart TD
 
 ## Revisit Triggers
 
-- Hardware target changes from single-profile Linux/discrete GPU to cross-platform release goals.
+- Hardware target changes from Vulkan-focused Linux profile to broader cross-platform release goals.
 - GPU texture-size limits materially impact export workflows.
 - Future `wgpu`/driver changes require backend policy adjustments.
