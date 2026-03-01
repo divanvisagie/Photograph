@@ -873,18 +873,42 @@ fn tex_storage_uniform_entries() -> [wgpu::BindGroupLayoutEntry; 3] {
     ]
 }
 
+fn adapter_type_priority(device_type: wgpu::DeviceType) -> Option<u8> {
+    match device_type {
+        wgpu::DeviceType::DiscreteGpu => Some(0),
+        wgpu::DeviceType::IntegratedGpu => Some(1),
+        wgpu::DeviceType::VirtualGpu => Some(2),
+        wgpu::DeviceType::Other => Some(3),
+        wgpu::DeviceType::Cpu => None,
+    }
+}
+
+fn select_vulkan_adapter_index(infos: &[wgpu::AdapterInfo]) -> Option<usize> {
+    infos
+        .iter()
+        .enumerate()
+        .filter_map(|(index, info)| {
+            if info.backend != wgpu::Backend::Vulkan {
+                return None;
+            }
+            adapter_type_priority(info.device_type).map(|priority| (priority, index))
+        })
+        .min()
+        .map(|(_, index)| index)
+}
+
 fn init_gpu_context() -> Option<GpuContext> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN,
         ..Default::default()
     });
-    let adapter = instance
+    let adapters: Vec<_> = instance
         .enumerate_adapters(wgpu::Backends::VULKAN)
         .into_iter()
-        .find(|adapter| {
-            let info = adapter.get_info();
-            info.backend == wgpu::Backend::Vulkan && info.device_type == wgpu::DeviceType::DiscreteGpu
-        })?;
+        .collect();
+    let adapter_infos: Vec<_> = adapters.iter().map(|adapter| adapter.get_info()).collect();
+    let adapter_index = select_vulkan_adapter_index(&adapter_infos)?;
+    let adapter = adapters.into_iter().nth(adapter_index)?;
     let adapter_info = adapter.get_info();
     let adapter_vendor_id = adapter_info.vendor;
     let adapter_name = adapter_info.name;
@@ -1442,7 +1466,22 @@ mod tests {
 
     use crate::state::{EditState, GradFilter, Rect};
 
-    use super::{debug_fallback_truthy, has_gpu_adjustments, is_gpu_state_supported, try_apply};
+    use super::{
+        debug_fallback_truthy, has_gpu_adjustments, is_gpu_state_supported,
+        select_vulkan_adapter_index, try_apply,
+    };
+
+    fn adapter_info(device_type: wgpu::DeviceType, backend: wgpu::Backend) -> wgpu::AdapterInfo {
+        wgpu::AdapterInfo {
+            name: format!("{device_type:?}"),
+            vendor: 0,
+            device: 0,
+            device_type,
+            driver: "test-driver".to_string(),
+            driver_info: "test-driver-info".to_string(),
+            backend,
+        }
+    }
 
     #[test]
     fn accepts_all_states() {
@@ -1465,6 +1504,30 @@ mod tests {
         assert!(!debug_fallback_truthy("0"));
         assert!(!debug_fallback_truthy("false"));
         assert!(!debug_fallback_truthy("no"));
+    }
+
+    #[test]
+    fn adapter_selection_prefers_discrete_then_integrated() {
+        let infos = vec![
+            adapter_info(wgpu::DeviceType::IntegratedGpu, wgpu::Backend::Vulkan),
+            adapter_info(wgpu::DeviceType::DiscreteGpu, wgpu::Backend::Vulkan),
+        ];
+        assert_eq!(select_vulkan_adapter_index(&infos), Some(1));
+    }
+
+    #[test]
+    fn adapter_selection_accepts_integrated_when_no_discrete() {
+        let infos = vec![
+            adapter_info(wgpu::DeviceType::Cpu, wgpu::Backend::Vulkan),
+            adapter_info(wgpu::DeviceType::IntegratedGpu, wgpu::Backend::Vulkan),
+        ];
+        assert_eq!(select_vulkan_adapter_index(&infos), Some(1));
+    }
+
+    #[test]
+    fn adapter_selection_rejects_cpu_only() {
+        let infos = vec![adapter_info(wgpu::DeviceType::Cpu, wgpu::Backend::Vulkan)];
+        assert_eq!(select_vulkan_adapter_index(&infos), None);
     }
 
     #[test]

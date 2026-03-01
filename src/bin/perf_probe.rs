@@ -141,7 +141,7 @@ fn main() -> Result<()> {
 
     if !gpu_status.available && !allow_cpu_fallback {
         anyhow::bail!(
-            "no compatible discrete Vulkan GPU detected (set {}=1 for debug CPU fallback)",
+            "no compatible Vulkan GPU detected (set {}=1 for debug CPU fallback)",
             processing::gpu_pipeline::DEBUG_ALLOW_CPU_FALLBACK_ENV
         );
     }

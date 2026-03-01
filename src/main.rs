@@ -65,7 +65,7 @@ fn enforce_runtime_gpu_policy(allow_debug_cpu_fallback: bool) {
         return;
     }
     eprintln!(
-        "photograph: no compatible discrete Vulkan GPU detected. Set {}=1 for debug CPU fallback.",
+        "photograph: no compatible Vulkan GPU detected. Set {}=1 for debug CPU fallback.",
         processing::gpu_pipeline::DEBUG_ALLOW_CPU_FALLBACK_ENV
     );
     std::process::exit(2);
