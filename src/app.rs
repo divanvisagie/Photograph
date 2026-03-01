@@ -231,6 +231,15 @@ fn configure_visuals(ctx: &egui::Context) {
     ctx.set_visuals(visuals);
 }
 
+fn startup_window_theme_command() -> egui::ViewportCommand {
+    egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark)
+}
+
+fn configure_startup_window_theme(ctx: &egui::Context) {
+    // Force dark window decorations from first frame so titlebar/chrome matches app visuals.
+    ctx.send_viewport_cmd(startup_window_theme_command());
+}
+
 fn configure_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
@@ -268,6 +277,7 @@ impl PhotographApp {
         config: AppConfig,
         preview_backend: PreviewBackend,
     ) -> Self {
+        configure_startup_window_theme(&cc.egui_ctx);
         configure_fonts(&cc.egui_ctx);
         configure_visuals(&cc.egui_ctx);
         let browser = Browser::new(config.browse_path.clone());
@@ -667,7 +677,7 @@ mod tests {
 
     use super::{
         RenderFormat, RenderSpeedProfile, build_output_path, render_profile_defaults,
-        resized_dimensions,
+        resized_dimensions, startup_window_theme_command,
     };
 
     fn unique_test_dir(name: &str) -> std::path::PathBuf {
@@ -745,6 +755,14 @@ mod tests {
     #[test]
     fn render_profile_speed_prioritizes_throughput() {
         assert_eq!(render_profile_defaults(RenderSpeedProfile::Speed), (82, 1));
+    }
+
+    #[test]
+    fn startup_window_theme_forces_dark_decorations() {
+        assert_eq!(
+            startup_window_theme_command(),
+            egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark)
+        );
     }
 }
 
