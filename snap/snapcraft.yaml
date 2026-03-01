@@ -1,6 +1,6 @@
 name: photograph
 title: Photograph
-version: "0.1.0"
+adopt-info: photograph
 summary: Native photo editor with non-destructive workflows
 description: |
   Photograph is a native Rust desktop photo browser and editor for image
@@ -52,6 +52,9 @@ parts:
     plugin: rust
     source: .
     rust-channel: stable
+    override-pull: |
+      craftctl default
+      craftctl set version="$(awk -F\" '/^version = / { print $2; exit }' Cargo.toml)"
     build-packages:
       - pkg-config
       - libx11-dev

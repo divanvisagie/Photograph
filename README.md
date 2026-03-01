@@ -1,6 +1,7 @@
 # Photograph
 
 [![Ubuntu](https://img.shields.io/badge/Ubuntu-E95420?style=for-the-badge&logo=ubuntu&logoColor=white)](#ubuntu-debian-dependencies)
+[![Snap Store](https://img.shields.io/badge/Snap_Store-82BEA0?style=for-the-badge&logo=snapcraft&logoColor=white)](https://snapcraft.io/photograph)
 
 <img src="packaging/linux/photograph.svg" alt="Photograph logo" width="180" />
 
