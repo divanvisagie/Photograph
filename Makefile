@@ -14,7 +14,9 @@ LINUX_ICON_SRC := packaging/linux/$(APP_NAME).svg
 LINUX_DESKTOP_DST := $(PKG_ROOT)/usr/share/applications/$(APP_NAME).desktop
 LINUX_ICON_DST := $(PKG_ROOT)/usr/share/icons/hicolor/scalable/apps/$(APP_NAME).svg
 
-.PHONY: dev build build-linux install install-linux clean-deb icons icon-runtime
+SNAP_FILE := $(APP_NAME)_$(VERSION)_$(ARCH).snap
+
+.PHONY: dev build build-linux install install-linux clean-deb icons icon-runtime snap snap-install snap-publish
 
 dev:
 	@command -v cargo-watch >/dev/null 2>&1 || { echo "cargo-watch is required: cargo install cargo-watch"; exit 1; }
@@ -81,3 +83,17 @@ install-linux: build-linux
 
 clean-deb:
 	rm -rf "$(DEB_DIR)"
+
+snap:
+	@command -v snapcraft >/dev/null 2>&1 || { echo "snapcraft is required: sudo snap install snapcraft --classic"; exit 1; }
+	snapcraft pack
+	@echo "Built snap: $(SNAP_FILE)"
+
+snap-install: snap
+	sudo snap install --dangerous "$(SNAP_FILE)"
+	@echo "Installed $(SNAP_FILE)"
+
+snap-publish:
+	@test -f "$(SNAP_FILE)" || { echo "no snap file found — run 'make snap' first"; exit 1; }
+	snapcraft upload "$(SNAP_FILE)" --release edge
+	@echo "Published $(SNAP_FILE) to edge channel"

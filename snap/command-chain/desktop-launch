@@ -1,0 +1,20 @@
+#!/bin/bash
+# Minimal desktop-launch for core24 strict snaps.
+# Bridges the Wayland/X11 socket gap caused by snap's isolated XDG_RUNTIME_DIR.
+
+HOST_XDG_RUNTIME_DIR="/run/user/$(id -u)"
+
+# Wayland: symlink host socket into snap's confined runtime dir
+WAYLAND_SOCKET_NAME="${WAYLAND_DISPLAY:-wayland-0}"
+if [ -S "${HOST_XDG_RUNTIME_DIR}/${WAYLAND_SOCKET_NAME}" ]; then
+    mkdir -p "${XDG_RUNTIME_DIR}"
+    ln -sf "${HOST_XDG_RUNTIME_DIR}/${WAYLAND_SOCKET_NAME}" \
+           "${XDG_RUNTIME_DIR}/${WAYLAND_SOCKET_NAME}" 2>/dev/null || true
+    export WAYLAND_DISPLAY="${WAYLAND_SOCKET_NAME}"
+else
+    # No Wayland socket found; force X11 fallback
+    unset WAYLAND_DISPLAY
+    export DISPLAY="${DISPLAY:-:0}"
+fi
+
+exec "$@"

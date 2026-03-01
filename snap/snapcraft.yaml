@@ -24,12 +24,16 @@ layout:
     bind: $SNAP/gpu-2404/libdrm
   /usr/share/drirc.d:
     symlink: $SNAP/gpu-2404/drirc.d
+  /usr/share/X11/xkb:
+    symlink: $SNAP/usr/share/X11/xkb
 
 apps:
   photograph:
     command-chain:
       - bin/gpu-2404-wrapper
+      - bin/desktop-launch
     command: bin/photograph
+    desktop: usr/share/applications/photograph.desktop
     environment:
       XDG_DATA_DIRS: $SNAP/usr/share:$XDG_DATA_DIRS
     plugs:
@@ -74,6 +78,19 @@ parts:
       - fontconfig-config
       - libssl3t64
       - libdbus-1-3
+      - xkb-data
+
+  desktop-integration:
+    plugin: dump
+    source: snap/gui
+    organize:
+      photograph.desktop: usr/share/applications/photograph.desktop
+
+  desktop-launch:
+    plugin: dump
+    source: snap/command-chain
+    organize:
+      desktop-launch: bin/desktop-launch
 
   gpu-2404:
     after: [photograph]
