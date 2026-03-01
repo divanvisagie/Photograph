@@ -37,6 +37,7 @@ apps:
     desktop: usr/share/applications/photograph.desktop
     environment:
       XDG_DATA_DIRS: $SNAP/usr/share:$XDG_DATA_DIRS
+      XDG_CONFIG_HOME: $SNAP_USER_COMMON/.config
     plugs:
       - opengl
       - desktop
