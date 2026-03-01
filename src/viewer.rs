@@ -1786,6 +1786,7 @@ fn show_color_section(
         }
     });
 
+    paint_hue_bar(ui, 0.0, 180.0);
     ui.horizontal(|ui| {
         ui.label("Hue Shift");
         let resp = ui.add(
@@ -1818,6 +1819,7 @@ fn show_color_section(
         egui::Frame::group(ui.style()).fill(bg).show(ui, |ui| {
             egui::CollapsingHeader::new(egui::RichText::new(*label).strong().color(label_color))
                 .show(ui, |ui| {
+                    paint_hue_bar(ui, SELECTIVE_CENTER_HUES[idx], 45.0);
                     ui.horizontal(|ui| {
                         ui.label("Hue");
                         let resp = ui.add(
@@ -1958,6 +1960,87 @@ fn show_color_section(
             *last_slider_change = None;
         }
     }
+}
+
+const SELECTIVE_CENTER_HUES: [f32; 8] = [0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 285.0, 330.0];
+
+fn hue_to_rgb(hue_deg: f32) -> egui::Color32 {
+    let h = ((hue_deg % 360.0) + 360.0) % 360.0;
+    let s: f32 = 0.85;
+    let v: f32 = 0.9;
+    let c = v * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = if h < 60.0 {
+        (c, x, 0.0)
+    } else if h < 120.0 {
+        (x, c, 0.0)
+    } else if h < 180.0 {
+        (0.0, c, x)
+    } else if h < 240.0 {
+        (0.0, x, c)
+    } else if h < 300.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    egui::Color32::from_rgb(
+        ((r + m) * 255.0) as u8,
+        ((g + m) * 255.0) as u8,
+        ((b + m) * 255.0) as u8,
+    )
+}
+
+fn paint_hue_bar(ui: &mut egui::Ui, center_hue: f32, half_range: f32) {
+    let bar_height = 6.0;
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), bar_height),
+        egui::Sense::hover(),
+    );
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let num_segments = 24;
+    let mut mesh = egui::Mesh::default();
+    for i in 0..num_segments {
+        let t0 = i as f32 / num_segments as f32;
+        let t1 = (i + 1) as f32 / num_segments as f32;
+        let hue0 = center_hue - half_range + t0 * 2.0 * half_range;
+        let hue1 = center_hue - half_range + t1 * 2.0 * half_range;
+        let c0 = hue_to_rgb(hue0);
+        let c1 = hue_to_rgb(hue1);
+        let x0 = rect.left() + t0 * rect.width();
+        let x1 = rect.left() + t1 * rect.width();
+        let idx = mesh.vertices.len() as u32;
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: egui::pos2(x0, rect.top()),
+            uv: egui::epaint::WHITE_UV,
+            color: c0,
+        });
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: egui::pos2(x1, rect.top()),
+            uv: egui::epaint::WHITE_UV,
+            color: c1,
+        });
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: egui::pos2(x1, rect.bottom()),
+            uv: egui::epaint::WHITE_UV,
+            color: c1,
+        });
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: egui::pos2(x0, rect.bottom()),
+            uv: egui::epaint::WHITE_UV,
+            color: c0,
+        });
+        mesh.indices.extend_from_slice(&[idx, idx + 1, idx + 2, idx, idx + 2, idx + 3]);
+    }
+    ui.painter().add(egui::Shape::mesh(mesh));
+    ui.painter().rect_stroke(
+        rect,
+        egui::Rounding::same(2),
+        egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
+        egui::StrokeKind::Middle,
+    );
 }
 
 fn selective_base_color(idx: usize) -> egui::Color32 {
