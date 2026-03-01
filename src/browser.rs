@@ -25,14 +25,19 @@ pub struct Browser {
     rx: mpsc::Receiver<ThumbResult>,
     pub selected: Option<PathBuf>,
     path_edit: String,
+    locations: Vec<(PathBuf, String)>,
+    scan_error: Option<String>,
 }
 
 impl Browser {
     /// Creates a browser rooted at `initial_dir` or a reasonable fallback directory.
     pub fn new(initial_dir: Option<PathBuf>) -> Self {
-        let dir = initial_dir
-            .filter(|p| p.is_dir())
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        let dir = initial_dir.filter(|p| p.is_dir()).unwrap_or_else(|| {
+            let pictures = dirs::picture_dir()
+                .or_else(|| dirs::home_dir().map(|h| h.join("Pictures")))
+                .filter(|p| p.is_dir());
+            pictures.unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+        });
         let (tx, rx) = mpsc::sync_channel(64);
         let mut b = Self {
             path_edit: dir.display().to_string(),
@@ -44,7 +49,10 @@ impl Browser {
             tx,
             rx,
             selected: None,
+            locations: Vec::new(),
+            scan_error: None,
         };
+        b.scan_locations();
         b.scan();
         b
     }
@@ -53,9 +61,27 @@ impl Browser {
         self.subdirs.clear();
         self.images.clear();
         self.thumbnails.clear();
+        self.scan_error = None;
 
-        let Ok(rd) = std::fs::read_dir(&self.current_dir) else {
-            return;
+        let rd = match std::fs::read_dir(&self.current_dir) {
+            Ok(rd) => rd,
+            Err(e) => {
+                let msg = if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    if std::env::var_os("SNAP").is_some() {
+                        format!(
+                            "Cannot read this directory (permission denied). \
+                             If installed as a Snap, run:\n\
+                             sudo snap connect photograph:removable-media"
+                        )
+                    } else {
+                        format!("Cannot read this directory: permission denied")
+                    }
+                } else {
+                    format!("Cannot read this directory: {e}")
+                };
+                self.scan_error = Some(msg);
+                return;
+            }
         };
 
         for entry in rd.flatten() {
@@ -73,6 +99,34 @@ impl Browser {
 
         self.subdirs.sort_by(|a, b| a.1.cmp(&b.1));
         self.images.sort_by(|a, b| a.1.cmp(&b.1));
+    }
+
+    fn scan_locations(&mut self) {
+        self.locations.clear();
+
+        if let Some(home) = dirs::home_dir() {
+            self.locations.push((home, "Home".into()));
+        }
+
+        let user = std::env::var("USER").unwrap_or_default();
+        let search_dirs = [
+            format!("/media/{user}"),
+            "/mnt".into(),
+            format!("/run/media/{user}"),
+        ];
+
+        for parent in &search_dirs {
+            let parent = PathBuf::from(parent);
+            if let Ok(entries) = std::fs::read_dir(&parent) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        self.locations.push((path, name));
+                    }
+                }
+            }
+        }
     }
 
     fn navigate(&mut self, dir: PathBuf) {
@@ -136,6 +190,7 @@ impl Browser {
             self.current_dir = nav;
             self.path_edit = self.current_dir.display().to_string();
             self.selected = None;
+            self.scan_locations();
             self.scan();
         }
 
@@ -145,6 +200,22 @@ impl Browser {
 
     /// Render path bar + grid contents into the provided `ui`.
     pub fn show_contents(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
+        // Locations row
+        if !self.locations.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                let mut nav_loc = None;
+                for (path, label) in &self.locations {
+                    if ui.button(label).clicked() {
+                        nav_loc = Some(path.clone());
+                    }
+                }
+                if let Some(loc) = nav_loc {
+                    self.navigate(loc);
+                }
+            });
+            ui.separator();
+        }
+
         // Editable path bar
         ui.horizontal(|ui| {
             if ui
@@ -191,7 +262,11 @@ impl Browser {
             ui.separator();
         }
 
-        if self.images.is_empty() {
+        if let Some(err) = &self.scan_error {
+            ui.centered_and_justified(|ui| {
+                ui.label(err.as_str());
+            });
+        } else if self.images.is_empty() && self.subdirs.is_empty() {
             ui.centered_and_justified(|ui| {
                 ui.label("No images in this directory");
             });
