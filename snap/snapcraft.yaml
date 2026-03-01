@@ -1,4 +1,5 @@
 name: photograph
+title: Photograph
 version: "0.1.0"
 summary: Native photo editor with non-destructive workflows
 description: |

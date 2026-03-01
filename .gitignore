@@ -2,3 +2,4 @@ target/
 .DS_Store
 *.snap
 snapcraft-*.txt
+docs/*-store.jpg

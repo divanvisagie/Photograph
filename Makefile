@@ -16,7 +16,10 @@ LINUX_ICON_DST := $(PKG_ROOT)/usr/share/icons/hicolor/scalable/apps/$(APP_NAME).
 
 SNAP_FILE := $(APP_NAME)_$(VERSION)_$(ARCH).snap
 
-.PHONY: dev build build-linux install install-linux clean-deb icons icon-runtime snap snap-install snap-publish
+SNAP_SCREENSHOT_SRC := docs/photograph-ui.png
+SNAP_SCREENSHOT_DST := docs/photograph-ui-store.jpg
+
+.PHONY: dev build build-linux install install-linux clean-deb icons icon-runtime snap snap-install snap-publish snap-screenshot
 
 dev:
 	@command -v cargo-watch >/dev/null 2>&1 || { echo "cargo-watch is required: cargo install cargo-watch"; exit 1; }
@@ -92,6 +95,12 @@ snap:
 snap-install: snap
 	sudo snap install --dangerous "$(SNAP_FILE)"
 	@echo "Installed $(SNAP_FILE)"
+
+snap-screenshot:
+	@command -v magick >/dev/null 2>&1 || { echo "imagemagick is required: sudo apt install imagemagick"; exit 1; }
+	@test -f "$(SNAP_SCREENSHOT_SRC)" || { echo "missing screenshot: $(SNAP_SCREENSHOT_SRC)"; exit 1; }
+	magick "$(SNAP_SCREENSHOT_SRC)" -quality 85 "$(SNAP_SCREENSHOT_DST)"
+	@echo "Generated store screenshot: $(SNAP_SCREENSHOT_DST) ($$(du -h "$(SNAP_SCREENSHOT_DST)" | cut -f1))"
 
 snap-publish:
 	@test -f "$(SNAP_FILE)" || { echo "no snap file found — run 'make snap' first"; exit 1; }
