@@ -155,25 +155,25 @@ pub struct PhotographApp {
 fn configure_visuals(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
 
-    // Yaru-dark backgrounds
-    let window_bg = egui::Color32::from_rgb(0x2C, 0x2C, 0x2C);
-    let extreme_bg = egui::Color32::from_rgb(0x1D, 0x1D, 0x1D);
-    let faint_bg = egui::Color32::from_rgb(0x27, 0x27, 0x27);
+    // Yaru-dark / libadwaita dark — sampled from Nautilus on Ubuntu 25.04
+    let window_bg = egui::Color32::from_rgb(0x1D, 0x1D, 0x20);     // content area
+    let extreme_bg = egui::Color32::from_rgb(0x14, 0x14, 0x16);    // deepest bg
+    let faint_bg = egui::Color32::from_rgb(0x1D, 0x1D, 0x20);      // view bg
 
     // Widget backgrounds
-    let button_normal = egui::Color32::from_rgb(0x3C, 0x3C, 0x3C);
-    let button_hover = egui::Color32::from_rgb(0x41, 0x41, 0x41);
-    let button_active = egui::Color32::from_rgb(0x1B, 0x1B, 0x1B);
-    let button_disabled = egui::Color32::from_rgb(0x2A, 0x2A, 0x2A);
+    let button_normal = egui::Color32::from_rgb(0x39, 0x39, 0x39); // sidebar-level raised
+    let button_hover = egui::Color32::from_rgb(0x33, 0x33, 0x36);  // headerbar tone
+    let button_active = egui::Color32::from_rgb(0x16, 0x16, 0x18); // pressed
+    let button_disabled = egui::Color32::from_rgb(0x22, 0x22, 0x24);
 
     // Text colors
-    let primary_text = egui::Color32::from_rgb(0xF7, 0xF7, 0xF7);
-    let disabled_text = egui::Color32::from_rgb(0x92, 0x92, 0x92);
+    let primary_text = egui::Color32::from_rgb(0xF7, 0xF7, 0xF7);  // primary labels
+    let disabled_text = egui::Color32::from_rgb(0x95, 0x95, 0x96);  // secondary/size text
 
     // Accent & semantic
-    let accent = egui::Color32::from_rgb(0xE9, 0x54, 0x20); // Ubuntu orange
-    let border = egui::Color32::from_rgb(0x13, 0x13, 0x13);
-    let focus_ring = egui::Color32::from_rgb(0xEF, 0x86, 0x61);
+    let accent = egui::Color32::from_rgb(0xE9, 0x54, 0x20);         // Ubuntu orange
+    let border = egui::Color32::from_rgb(0x0E, 0x0E, 0x10);         // near-black borders
+    let focus_ring = egui::Color32::from_rgba_unmultiplied(0xEF, 0x86, 0x61, 0xB3);
 
     let rounding = egui::CornerRadius::same(6);
 
@@ -195,10 +195,10 @@ fn configure_visuals(ctx: &egui::Context) {
     visuals.error_fg_color = egui::Color32::from_rgb(0xC7, 0x16, 0x2B);
     visuals.warn_fg_color = egui::Color32::from_rgb(0xF9, 0x9B, 0x11);
 
-    // Window stroke
+    // Window stroke — very subtle
     visuals.window_stroke = egui::Stroke::new(1.0, border);
 
-    // Widget styles — noninteractive (labels, disabled)
+    // Noninteractive (labels, separators, disabled)
     visuals.widgets.noninteractive.bg_fill = button_disabled;
     visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, border);
     visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, disabled_text);
