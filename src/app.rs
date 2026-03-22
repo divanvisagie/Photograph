@@ -155,27 +155,28 @@ pub struct PhotographApp {
 fn configure_visuals(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
 
-    // Yaru-dark / libadwaita dark — sampled from Nautilus on Ubuntu 25.04
-    let window_bg = egui::Color32::from_rgb(0x1D, 0x1D, 0x20);     // content area
-    let extreme_bg = egui::Color32::from_rgb(0x14, 0x14, 0x16);    // deepest bg
-    let faint_bg = egui::Color32::from_rgb(0x1D, 0x1D, 0x20);      // view bg
+    // Sector F Labs style guide — dark theme (photo-editing variant)
+    // Panels/chrome use surface colors; canvas stays neutral grey for photo work
+    let window_bg = egui::Color32::from_rgb(0x16, 0x16, 0x16);     // codeBg — neutral grey canvas
+    let extreme_bg = egui::Color32::from_rgb(0x0B, 0x0B, 0x0B);    // bg — deepest
+    let faint_bg = egui::Color32::from_rgb(0x11, 0x11, 0x11);      // inputBg — panel/sidebar bg
 
-    // Widget backgrounds
-    let button_normal = egui::Color32::from_rgb(0x39, 0x39, 0x39); // sidebar-level raised
-    let button_hover = egui::Color32::from_rgb(0x33, 0x33, 0x36);  // headerbar tone
-    let button_active = egui::Color32::from_rgb(0x16, 0x16, 0x18); // pressed
-    let button_disabled = egui::Color32::from_rgb(0x22, 0x22, 0x24);
+    // Widget backgrounds — built from surface palette
+    let button_normal = egui::Color32::from_rgb(0x1A, 0x1A, 0x1A); // raised above inputBg
+    let button_hover = egui::Color32::from_rgb(0x22, 0x22, 0x22);  // lighter on hover
+    let button_active = egui::Color32::from_rgb(0x11, 0x11, 0x11); // pressed — inputBg
+    let button_disabled = egui::Color32::from_rgb(0x16, 0x16, 0x16); // codeBg
 
     // Text colors
-    let primary_text = egui::Color32::from_rgb(0xF7, 0xF7, 0xF7);  // primary labels
-    let disabled_text = egui::Color32::from_rgb(0x95, 0x95, 0x96);  // secondary/size text
+    let primary_text = egui::Color32::from_rgb(0xD8, 0xD8, 0xD8);  // text
+    let disabled_text = egui::Color32::from_rgb(0xA8, 0xA8, 0xA8);  // muted
 
     // Accent & semantic
-    let accent = egui::Color32::from_rgb(0xE9, 0x54, 0x20);         // Ubuntu orange
-    let border = egui::Color32::from_rgb(0x0E, 0x0E, 0x10);         // near-black borders
-    let focus_ring = egui::Color32::from_rgba_unmultiplied(0xEF, 0x86, 0x61, 0xB3);
+    let accent = egui::Color32::from_rgb(0xE0, 0x5A, 0x00);         // burnt orange
+    let border = egui::Color32::from_rgb(0x33, 0x33, 0x33);         // border
+    let focus_ring = egui::Color32::from_rgba_unmultiplied(0xE0, 0x5A, 0x00, 0xB3);
 
-    let rounding = egui::CornerRadius::same(6);
+    let rounding = egui::CornerRadius::same(0);
 
     // Panel & window fills
     visuals.window_fill = window_bg;
@@ -192,8 +193,8 @@ fn configure_visuals(ctx: &egui::Context) {
 
     // Hyperlinks & semantic colors
     visuals.hyperlink_color = accent;
-    visuals.error_fg_color = egui::Color32::from_rgb(0xC7, 0x16, 0x2B);
-    visuals.warn_fg_color = egui::Color32::from_rgb(0xF9, 0x9B, 0x11);
+    visuals.error_fg_color = egui::Color32::from_rgb(0xCC, 0x22, 0x00);
+    visuals.warn_fg_color = egui::Color32::from_rgb(0xE0, 0x5A, 0x00);
 
     // Window stroke — very subtle
     visuals.window_stroke = egui::Stroke::new(1.0, border);
@@ -1103,7 +1104,7 @@ impl eframe::App for PhotographApp {
         {
             egui::Window::new("Debug")
                 .id(egui::Id::new("debug_window"))
-                .default_pos([10.0, 400.0])
+                .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -10.0])
                 .default_size([300.0, 200.0])
                 .show(ctx, |ui| {
                     if let Some(rect) = viewport_rect {
