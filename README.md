@@ -13,7 +13,7 @@ Photograph focuses on practical desktop workflows: browsing folders, opening ima
 
 Active project (MVP is usable and still evolving).
 
-Current support intent: Ubuntu Linux.
+Current support intent: Ubuntu Linux and macOS.
 
 ## Screenshot
 
@@ -84,6 +84,7 @@ make dev
 Photograph stores config at:
 
 - Linux: `~/.config/photograph/config.toml`
+- macOS: `~/Library/Application Support/photograph/config.toml`
 
 Current persisted settings include window sizes/positions, last browsed path, and preview backend preference.
 
@@ -108,9 +109,7 @@ PHOTOGRAPH_DEBUG_ALLOW_CPU_FALLBACK=1 PHOTOGRAPH_PREVIEW_BACKEND=cpu cargo run -
 
 ## Packaging
 
-The `Makefile` supports Linux (`.deb`) packaging.
-
-Photograph is currently intended to be supported on Ubuntu Linux.
+The `Makefile` supports Linux (`.deb`) and macOS (`.app` bundle / `.dmg`) packaging. `make build` and `make install` auto-detect the current platform.
 
 Icon assets are derived from the SVG source at `packaging/linux/photograph.svg`:
 
@@ -118,18 +117,19 @@ Icon assets are derived from the SVG source at `packaging/linux/photograph.svg`:
 make icons
 ```
 
-This regenerates the embedded runtime PNG (`assets/photograph-icon-128.png`).
-Normal `make build` does not regenerate icon assets.
+This regenerates the embedded runtime PNG (`assets/photograph-icon-128.png`). On macOS it also builds the `.icns` bundle with squircle background.
 
 Common targets:
 
 ```bash
-make build          # Linux packaging build
-make install        # Linux package install
+make build          # platform-aware packaging build
+make install        # platform-aware install
 make build-linux    # build .deb on Linux
+make build-macos    # build .app bundle on macOS
+make package-macos  # create .dmg disk image
 ```
 
-Linux packaging assets live under `packaging/linux/`.
+Linux packaging assets live under `packaging/linux/`. macOS bundle metadata lives under `packaging/macos/`.
 
 ## Performance Probe
 
@@ -159,7 +159,7 @@ These docs include Mermaid diagrams (flowcharts and sequence diagrams) for previ
 - `src/bin/perf_probe.rs` benchmark helper
 - `docs/` architecture notes and design decisions
 - `assets/` embedded app assets (including icon)
-- `packaging/` Linux packaging files
+- `packaging/` Linux and macOS packaging files
 - `Makefile` dev/build/install/package commands
 
 ## License
