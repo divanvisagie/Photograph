@@ -48,7 +48,7 @@ SNAP_FILE := $(APP_NAME)_$(VERSION)_$(ARCH).snap
 SNAP_SCREENSHOT_SRC := docs/photograph-ui.png
 SNAP_SCREENSHOT_DST := docs/photograph-ui-store.jpg
 
-.PHONY: dev build build-linux build-macos package-macos build-unsupported install install-linux install-macos install-unsupported clean-deb clean-macos clean-icons icons icon-runtime icon-macos snap snap-install snap-publish snap-screenshot docs
+.PHONY: dev build build-linux build-macos package-macos build-unsupported install install-linux install-macos install-unsupported clean-deb clean-macos clean-icons icons icon-runtime icon-macos snap snap-install snap-publish snap-screenshot docs publish-macos
 
 dev:
 	@command -v cargo-watch >/dev/null 2>&1 || { echo "cargo-watch is required: cargo install cargo-watch"; exit 1; }
@@ -200,10 +200,16 @@ build-macos: icon-runtime icon-macos
 	@echo "Built macOS app bundle: $(MACOS_APP_DIR)"
 	@echo "Optional DMG target: make package-macos"
 
+MACOS_DMG_STAGE := $(MACOS_STAGING_DIR)/dmg-stage
+
 package-macos: build-macos
 	@command -v hdiutil >/dev/null 2>&1 || { echo "hdiutil is required on macOS for DMG packaging."; exit 1; }
-	rm -f "$(MACOS_DMG_PATH)"
-	hdiutil create -volname "$(MACOS_APP_NAME)" -srcfolder "$(MACOS_APP_DIR)" -ov -format UDZO "$(MACOS_DMG_PATH)"
+	rm -rf "$(MACOS_DMG_STAGE)" "$(MACOS_DMG_PATH)"
+	mkdir -p "$(MACOS_DMG_STAGE)"
+	cp -R "$(MACOS_APP_DIR)" "$(MACOS_DMG_STAGE)/"
+	ln -s /Applications "$(MACOS_DMG_STAGE)/Applications"
+	hdiutil create -volname "$(MACOS_APP_NAME)" -srcfolder "$(MACOS_DMG_STAGE)" -ov -format UDZO "$(MACOS_DMG_PATH)"
+	rm -rf "$(MACOS_DMG_STAGE)"
 	@echo "Built DMG: $(MACOS_DMG_PATH)"
 
 install-macos: build-macos
@@ -229,3 +235,11 @@ docs:
 	@command -v python3 >/dev/null 2>&1 || { echo "python3 is required"; exit 1; }
 	@echo "Serving docs at http://localhost:8000"
 	@cd docs && python3 -m http.server 8000
+
+publish-macos: package-macos
+	@command -v gh >/dev/null 2>&1 || { echo "gh CLI is required: brew install gh"; exit 1; }
+	@echo "Publishing v$(VERSION) for macOS..."
+	@gh release view "v$(VERSION)" >/dev/null 2>&1 || \
+		gh release create "v$(VERSION)" --title "v$(VERSION)" --generate-notes
+	gh release upload "v$(VERSION)" "$(MACOS_DMG_PATH)" --clobber
+	@echo "Uploaded $(MACOS_DMG_PATH) to release v$(VERSION)"
