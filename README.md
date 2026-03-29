@@ -1,5 +1,6 @@
 # Photograph
 
+[![macOS](https://img.shields.io/badge/macOS-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/divanvisagie/Photograph/releases/latest)
 [![Ubuntu](https://img.shields.io/badge/Ubuntu-E95420?style=for-the-badge&logo=ubuntu&logoColor=white)](#ubuntu-debian-dependencies)
 [![Snap Store](https://img.shields.io/badge/Snap_Store-82BEA0?style=for-the-badge&logo=snapcraft&logoColor=white)](https://snapcraft.io/photograph)
 
@@ -36,7 +37,19 @@ Current support intent: Ubuntu Linux and macOS.
 - Standard image formats via `image` crate fast path (for example `JPG`, `PNG`, `TIFF`, `WebP`, `BMP`)
 - The browser also recognizes `HEIC` and `AVIF` extensions, but actual decode support depends on the image stack available in the current build
 
-## Quick Start
+## Install
+
+### macOS
+
+Download the latest `.dmg` from [GitHub Releases](https://github.com/divanvisagie/Photograph/releases/latest), open it, and drag Photograph into your Applications folder.
+
+### Linux (Snap)
+
+```bash
+sudo snap install photograph
+```
+
+### From Source
 
 ```bash
 cargo run --bin photograph
