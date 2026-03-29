@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Photograph - Native Desktop Photo Editor</title>
+  <link rel="stylesheet" href="https://divanv.com/css/styles.css">
+  <link rel="stylesheet" href="https://divanv.com/css/main.css">
+</head>
+<body>
+  <nav>
+    <div>
+      <h1>
+        <a href="/">Divan <span class="full">Visagie</span></a>
+        <span style="color: var(--accent-color); margin: 0 8px;">/</span>
+        <span>Photograph</span>
+      </h1>
+    </div>
+  </nav>
+
+  <div class="content">
+    <div class="post-content">
+      <h2 class="subtitle">Native Desktop Photo Editor</h2>
+
+      <p>
+        Most photo editors are either bloated creative suites or flimsy web apps.
+        Neither respects the simple workflow: browse a folder, tweak an image,
+        export the result.
+      </p>
+
+      <p>
+        <strong>Photograph is a native Rust desktop photo browser and editor</strong>
+        built for practical image management and color grading. It opens fast,
+        handles RAW files, and stores non-destructive edits as sidecar JSON
+        so your originals are never touched.
+      </p>
+
+      <p>
+        <a href="https://github.com/divanvisagie/Photograph">GitHub README</a> &bull;
+        <a href="https://snapcraft.io/photograph">Snap Store</a> &bull;
+        <a href="https://github.com/divanvisagie/Photograph/blob/master/docs/pipeline-architecture.md">Architecture</a>
+      </p>
+
+      <h2>Screenshot</h2>
+
+      <p>
+        <img src="photograph-ui.png" alt="Photograph screenshot" style="max-width: 100%; border: 1px solid var(--border-color, #d0ccc8);">
+      </p>
+
+      <h2>What It Does</h2>
+
+      <ul>
+        <li>Folder browser with thumbnail grid</li>
+        <li>Full image viewer/editor windows (egui/eframe)</li>
+        <li>EXIF metadata display</li>
+        <li>Non-destructive edits stored as sidecar JSON</li>
+        <li>Geometry: rotate, flip, crop, straighten, keystone</li>
+        <li>Color/tone: exposure, white balance, HSL, selective color, graduated filter, highlight/shadow recovery</li>
+        <li>Export as JPG, PNG, or WebP with quality/compression and optional resize</li>
+        <li>Background rendering and export progress UI</li>
+      </ul>
+
+      <h2>Supported Formats</h2>
+
+      <p>
+        RAW decode via <code>rawler</code>: RAF, DNG, NEF, CR2, ARW.
+        Standard formats via the <code>image</code> crate: JPG, PNG, TIFF, WebP, BMP.
+        The browser also recognizes HEIC and AVIF extensions where decode support is available.
+      </p>
+
+      <h2>Quick Start</h2>
+
+<pre><code>cargo install --git https://github.com/divanvisagie/Photograph
+photograph</code></pre>
+
+      <p>
+        The app opens a native window and remembers UI state between runs.
+      </p>
+
+      <h2>Ubuntu/Debian Dependencies</h2>
+
+<pre><code>sudo apt install -y vulkan-tools
+vulkaninfo --summary</code></pre>
+
+      <p>
+        If <code>vulkaninfo</code> cannot detect a Vulkan GPU adapter,
+        fix driver/runtime setup before running Photograph.
+      </p>
+
+      <h2>Development</h2>
+
+<pre><code>cargo build
+cargo run --bin photograph
+cargo test</code></pre>
+
+      <p>
+        Live-reload dev loop (requires <code>cargo-watch</code>):
+      </p>
+
+<pre><code>cargo install cargo-watch
+make dev</code></pre>
+
+      <h2>Packaging</h2>
+
+      <p>
+        The <code>Makefile</code> supports Linux (<code>.deb</code>) and macOS
+        (<code>.app</code> bundle / <code>.dmg</code>) packaging.
+      </p>
+
+<pre><code>make build          # platform-aware packaging build
+make install        # platform-aware install
+make build-linux    # build .deb on Linux
+make build-macos    # build .app bundle on macOS
+make package-macos  # create .dmg disk image</code></pre>
+
+      <h2>Architecture</h2>
+
+      <p>
+        Pipeline and architecture decisions are documented in detail:
+      </p>
+
+      <ul>
+        <li><a href="pipeline-architecture.md">Pipeline Architecture</a></li>
+        <li><a href="pipeline-decisions.md">Pipeline Decisions (ADR-style)</a></li>
+        <li><a href="raw-load-latency.md">RAW Load Latency Notes</a></li>
+      </ul>
+
+      <h2>License</h2>
+
+      <p>GPL-2.0-only. See <a href="https://github.com/divanvisagie/Photograph/blob/master/LICENSE">LICENSE</a>.</p>
+    </div>
+  </div>
+
+  <footer>
+    Divan Visagie &bull; Copyright 2019-26 &bull;
+    <a href="mailto:me@divanv.com">me@divanv.com</a> &bull;
+    <span><a href="/cv">CV</a></span> &bull;
+    <span><a href="https://github.com/divanvisagie">GitHub</a></span> &bull;
+    <span><a href="/pman">pman</a></span> &bull;
+    <span><a href="/mdsql">mdsql</a></span> &bull;
+    <span><a href="/Photograph">Photograph</a></span> &bull;
+    <span><a href="/fretboard">Fretboard</a></span> &bull;
+    <span><a href="/weather">Weather</a></span>
+  </footer>
+</body>
+</html>

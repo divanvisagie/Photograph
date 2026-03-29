@@ -48,7 +48,7 @@ SNAP_FILE := $(APP_NAME)_$(VERSION)_$(ARCH).snap
 SNAP_SCREENSHOT_SRC := docs/photograph-ui.png
 SNAP_SCREENSHOT_DST := docs/photograph-ui-store.jpg
 
-.PHONY: dev build build-linux build-macos package-macos build-unsupported install install-linux install-macos install-unsupported clean-deb clean-macos clean-icons icons icon-runtime icon-macos snap snap-install snap-publish snap-screenshot
+.PHONY: dev build build-linux build-macos package-macos build-unsupported install install-linux install-macos install-unsupported clean-deb clean-macos clean-icons icons icon-runtime icon-macos snap snap-install snap-publish snap-screenshot docs
 
 dev:
 	@command -v cargo-watch >/dev/null 2>&1 || { echo "cargo-watch is required: cargo install cargo-watch"; exit 1; }
@@ -224,3 +224,8 @@ clean-macos:
 
 clean-icons:
 	rm -rf "$(ICON_TMP_DIR)"
+
+docs:
+	@command -v python3 >/dev/null 2>&1 || { echo "python3 is required"; exit 1; }
+	@echo "Serving docs at http://localhost:8000"
+	@cd docs && python3 -m http.server 8000
