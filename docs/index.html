@@ -41,6 +41,70 @@
         <a href="https://github.com/divanvisagie/Photograph/blob/master/docs/pipeline-architecture.md">Architecture</a>
       </p>
 
+      <h2>Download</h2>
+
+      <div id="download-section">
+        <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+          <button id="btn-macos" class="os-tab" onclick="selectOS('macos')">macOS</button>
+          <button id="btn-linux" class="os-tab" onclick="selectOS('linux')">Linux</button>
+          <button id="btn-source" class="os-tab" onclick="selectOS('source')">Source</button>
+        </div>
+
+        <div id="os-macos" class="os-panel">
+          <p>
+            Download the latest <code>.dmg</code>, open it, and drag Photograph
+            into your Applications folder.
+          </p>
+          <p>
+            <a id="dmg-link" href="https://github.com/divanvisagie/Photograph/releases/latest" style="
+              display: inline-block;
+              font-weight: bold;
+              letter-spacing: 0.06em;
+              text-transform: uppercase;
+              border: 1px solid;
+              padding: 0.5rem 1.1rem;
+              text-decoration: none;
+              background: var(--accent-color, #e05a00);
+              border-color: var(--accent-color, #e05a00);
+              color: #ffffff;
+            ">Download for macOS</a>
+          </p>
+          <p style="font-size: 13px; color: var(--muted-color, #2f2925);">
+            Requires macOS with Metal GPU support.
+          </p>
+        </div>
+
+        <div id="os-linux" class="os-panel" style="display: none;">
+          <p>
+            Available on the Snap Store for Ubuntu and other snap-enabled distributions.
+          </p>
+          <p>
+            <a href="https://snapcraft.io/photograph" style="
+              display: inline-block;
+              font-weight: bold;
+              letter-spacing: 0.06em;
+              text-transform: uppercase;
+              border: 1px solid;
+              padding: 0.5rem 1.1rem;
+              text-decoration: none;
+              background: var(--accent-color, #e05a00);
+              border-color: var(--accent-color, #e05a00);
+              color: #ffffff;
+            ">Get on Snap Store</a>
+          </p>
+<pre><code>sudo snap install photograph</code></pre>
+          <p style="font-size: 13px; color: var(--muted-color, #2f2925);">
+            Requires a Vulkan-capable GPU. Run <code>vulkaninfo --summary</code> to verify.
+          </p>
+        </div>
+
+        <div id="os-source" class="os-panel" style="display: none;">
+          <p>Build from source on any platform with a Rust toolchain.</p>
+<pre><code>cargo install --git https://github.com/divanvisagie/Photograph
+photograph</code></pre>
+        </div>
+      </div>
+
       <h2>Screenshot</h2>
 
       <p>
@@ -66,25 +130,6 @@
         RAW decode via <code>rawler</code>: RAF, DNG, NEF, CR2, ARW.
         Standard formats via the <code>image</code> crate: JPG, PNG, TIFF, WebP, BMP.
         The browser also recognizes HEIC and AVIF extensions where decode support is available.
-      </p>
-
-      <h2>Quick Start</h2>
-
-<pre><code>cargo install --git https://github.com/divanvisagie/Photograph
-photograph</code></pre>
-
-      <p>
-        The app opens a native window and remembers UI state between runs.
-      </p>
-
-      <h2>Ubuntu/Debian Dependencies</h2>
-
-<pre><code>sudo apt install -y vulkan-tools
-vulkaninfo --summary</code></pre>
-
-      <p>
-        If <code>vulkaninfo</code> cannot detect a Vulkan GPU adapter,
-        fix driver/runtime setup before running Photograph.
       </p>
 
       <h2>Development</h2>
@@ -142,5 +187,54 @@ make package-macos  # create .dmg disk image</code></pre>
     <span><a href="/fretboard">Fretboard</a></span> &bull;
     <span><a href="/weather">Weather</a></span>
   </footer>
+  <style>
+    .os-tab {
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: bold;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      border: 1px solid var(--border-color, #d0ccc8);
+      border-radius: 0;
+      padding: 0.4rem 0.9rem;
+      cursor: pointer;
+      background: transparent;
+      color: var(--text-color, #111111);
+    }
+    .os-tab.active {
+      background: var(--text-color, #111111);
+      border-color: var(--text-color, #111111);
+      color: var(--bg-color, #ffffff);
+    }
+  </style>
+
+  <script>
+    function selectOS(os) {
+      document.querySelectorAll('.os-panel').forEach(function(el) { el.style.display = 'none'; });
+      document.querySelectorAll('.os-tab').forEach(function(el) { el.classList.remove('active'); });
+      document.getElementById('os-' + os).style.display = 'block';
+      document.getElementById('btn-' + os).classList.add('active');
+    }
+
+    (function() {
+      var ua = navigator.userAgent || '';
+      var os = 'source';
+      if (/Mac/.test(ua)) os = 'macos';
+      else if (/Linux/.test(ua)) os = 'linux';
+      selectOS(os);
+
+      // Resolve latest DMG link from GitHub releases API
+      var dmgLink = document.getElementById('dmg-link');
+      fetch('https://api.github.com/repos/divanvisagie/Photograph/releases/latest')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.assets) {
+            var dmg = data.assets.find(function(a) { return a.name.endsWith('.dmg'); });
+            if (dmg) dmgLink.href = dmg.browser_download_url;
+          }
+        })
+        .catch(function() {});
+    })();
+  </script>
 </body>
 </html>
