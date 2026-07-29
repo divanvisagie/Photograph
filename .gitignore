@@ -3,3 +3,4 @@ target/
 *.snap
 snapcraft-*.txt
 docs/*-store.jpg
+.claude
