@@ -1,5 +1,7 @@
 use image::{DynamicImage, Rgba};
-use imageproc::geometric_transformations::{Interpolation, Projection, rotate_about_center, warp};
+use imageproc::geometric_transformations::{
+    Border, Interpolation, Projection, rotate_about_center, warp,
+};
 
 use crate::state::{EditState, Keystone};
 
@@ -17,7 +19,7 @@ pub fn apply(img: &DynamicImage, state: &EditState) -> DynamicImage {
             &rgba,
             state.straighten.to_radians(),
             Interpolation::Bilinear,
-            Rgba([0u8, 0u8, 0u8, 255u8]),
+            Border::Constant(Rgba([0u8, 0u8, 0u8, 255u8])),
         );
         out = DynamicImage::ImageRgba8(rotated);
     }
@@ -98,9 +100,9 @@ fn apply_keystone(img: DynamicImage, keystone: &Keystone) -> DynamicImage {
 
     let warped = warp(
         &rgba,
-        &projection,
+        projection,
         Interpolation::Bilinear,
-        Rgba([0, 0, 0, 255]),
+        Border::Constant(Rgba([0, 0, 0, 255])),
     );
     DynamicImage::ImageRgba8(warped)
 }

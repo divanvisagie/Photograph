@@ -14,8 +14,8 @@ impl Editor {
     }
 
     /// Renders the editor side panel UI.
-    pub fn show(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::right("editor_panel").show(ctx, |ui| {
+    pub fn show(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::right("editor_panel").show(ui, |ui| {
             ui.heading("Edit");
             ui.separator();
             ui.label("Phase 2/3: editor not yet implemented");

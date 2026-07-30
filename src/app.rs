@@ -768,7 +768,9 @@ mod tests {
 }
 
 impl eframe::App for PhotographApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let viewport_rect = ctx.input(|i| i.viewport().inner_rect);
 
         // Track window size for saving on exit
@@ -825,7 +827,7 @@ impl eframe::App for PhotographApp {
         }
 
         // Top menu bar
-        egui::TopBottomPanel::top("main_menu").show(ctx, |ui| {
+        egui::Panel::top("main_menu").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Render").clicked() {
                     self.show_render_window = true;
@@ -849,10 +851,9 @@ impl eframe::App for PhotographApp {
                 });
             });
         });
-        let content_rect = ctx.available_rect();
-
         // Empty central panel as background (required by egui)
-        egui::CentralPanel::default().show(ctx, |_ui| {});
+        let central = egui::CentralPanel::default().show(ui, |_ui| {});
+        let content_rect = central.response.rect;
 
         // Render window
         if self.show_render_window {
@@ -1140,7 +1141,7 @@ impl eframe::App for PhotographApp {
         }
     }
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self) {
         for vw in &self.viewers {
             vw.viewer.save_edits();
         }

@@ -770,7 +770,7 @@ impl Viewer {
                     // Scroll-to-zoom and pinch-to-zoom (only when hovered)
                     if resp.hovered() {
                         // Mouse wheel zoom
-                        let scroll_delta = ui.input(|i| i.raw_scroll_delta.y);
+                        let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
                         // Trackpad pinch zoom (egui reports as a multiplier, e.g. 1.02)
                         let pinch_delta = ui.input(|i| i.zoom_delta());
 
