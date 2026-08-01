@@ -1,6 +1,5 @@
 # Photograph
 
-[![macOS](https://img.shields.io/badge/macOS-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/divanvisagie/Photograph/releases/latest)
 [![Ubuntu](https://img.shields.io/badge/Ubuntu-E95420?style=for-the-badge&logo=ubuntu&logoColor=white)](#ubuntu-debian-dependencies)
 [![Snap Store](https://img.shields.io/badge/Snap_Store-82BEA0?style=for-the-badge&logo=snapcraft&logoColor=white)](https://snapcraft.io/photograph)
 
@@ -14,7 +13,7 @@ Photograph focuses on practical desktop workflows: browsing folders, opening ima
 
 Active project (MVP is usable and still evolving).
 
-Current support intent: Ubuntu Linux and macOS.
+Current support intent: Ubuntu Linux only (see [ADR-0012](docs/adr/0012-drop-macos-support-linux-only.md)).
 
 ## Screenshot
 
@@ -38,10 +37,6 @@ Current support intent: Ubuntu Linux and macOS.
 - The browser also recognizes `HEIC` and `AVIF` extensions, but actual decode support depends on the image stack available in the current build
 
 ## Install
-
-### macOS
-
-Download the latest `.dmg` from [GitHub Releases](https://github.com/divanvisagie/Photograph/releases/latest), open it, and drag Photograph into your Applications folder.
 
 ### Linux (Snap)
 
@@ -94,10 +89,7 @@ make dev
 
 ## Configuration
 
-Photograph stores config at:
-
-- Linux: `~/.config/photograph/config.toml`
-- macOS: `~/Library/Application Support/photograph/config.toml`
+Photograph stores config at `~/.config/photograph/config.toml`.
 
 Current persisted settings include window sizes/positions, last browsed path, and preview backend preference.
 
@@ -122,7 +114,8 @@ PHOTOGRAPH_DEBUG_ALLOW_CPU_FALLBACK=1 PHOTOGRAPH_PREVIEW_BACKEND=cpu cargo run -
 
 ## Packaging
 
-The `Makefile` supports Linux (`.deb`) and macOS (`.app` bundle / `.dmg`) packaging. `make build` and `make install` auto-detect the current platform.
+The `Makefile` builds a Linux `.deb`. `make build` and `make install` are aliases for `make
+build-linux`/`make install-linux`.
 
 Icon assets are derived from the SVG source at `packaging/linux/photograph.svg`:
 
@@ -130,19 +123,16 @@ Icon assets are derived from the SVG source at `packaging/linux/photograph.svg`:
 make icons
 ```
 
-This regenerates the embedded runtime PNG (`assets/photograph-icon-128.png`). On macOS it also builds the `.icns` bundle with squircle background.
+This regenerates the embedded runtime PNG (`assets/photograph-icon-128.png`).
 
 Common targets:
 
 ```bash
-make build          # platform-aware packaging build
-make install        # platform-aware install
-make build-linux    # build .deb on Linux
-make build-macos    # build .app bundle on macOS
-make package-macos  # create .dmg disk image
+make build          # build .deb on Linux
+make install        # install the built .deb
 ```
 
-Linux packaging assets live under `packaging/linux/`. macOS bundle metadata lives under `packaging/macos/`.
+Linux packaging assets live under `packaging/linux/`.
 
 ## Performance Probe
 
@@ -172,7 +162,7 @@ These docs include Mermaid diagrams (flowcharts and sequence diagrams) for previ
 - `src/bin/perf_probe.rs` benchmark helper
 - `docs/` architecture notes and design decisions
 - `assets/` embedded app assets (including icon)
-- `packaging/` Linux and macOS packaging files
+- `packaging/` Linux packaging files
 - `Makefile` dev/build/install/package commands
 
 ## License

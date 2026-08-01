@@ -886,15 +886,8 @@ fn adapter_type_priority(device_type: wgpu::DeviceType) -> Option<u8> {
     }
 }
 
-/// The native GPU backend for the current platform.
-#[cfg(target_os = "macos")]
-const NATIVE_BACKEND: wgpu::Backends = wgpu::Backends::METAL;
-#[cfg(target_os = "macos")]
-const NATIVE_BACKEND_FILTER: wgpu::Backend = wgpu::Backend::Metal;
-
-#[cfg(not(target_os = "macos"))]
+/// The native GPU backend (see docs/adr/0012-drop-macos-support-linux-only.md).
 const NATIVE_BACKEND: wgpu::Backends = wgpu::Backends::VULKAN;
-#[cfg(not(target_os = "macos"))]
 const NATIVE_BACKEND_FILTER: wgpu::Backend = wgpu::Backend::Vulkan;
 
 fn select_adapter_index(infos: &[wgpu::AdapterInfo]) -> Option<usize> {
