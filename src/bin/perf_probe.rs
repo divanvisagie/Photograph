@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -212,24 +213,39 @@ fn main() -> Result<()> {
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("create_dir_all {}", out_dir.display()))?;
 
+    let decode_ns_sum = AtomicU64::new(0);
+    let gpu_ns_sum = AtomicU64::new(0);
+    let encode_ns_sum = AtomicU64::new(0);
+
     let export_start = Instant::now();
     files.par_iter().try_for_each(|path| -> Result<()> {
+        let t0 = Instant::now();
         let input = thumbnail::open_image(path)
             .with_context(|| format!("full open failed for {}", path.display()))?;
-        let processed = processing::transform::apply(&input, &state);
+        decode_ns_sum.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        let t1 = Instant::now();
+        let processed = apply_preview_backend(&input, &state, backend)?;
+        gpu_ns_sum.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
         let output = out_dir.join(format!("{}.jpg", stem));
         let file = fs::File::create(&output)
             .with_context(|| format!("create output failed {}", output.display()))?;
         let writer = BufWriter::new(file);
         let encoder = JpegEncoder::new_with_quality(writer, 90);
+        let t2 = Instant::now();
         processed
             .write_with_encoder(encoder)
             .with_context(|| format!("jpeg encode failed {}", output.display()))?;
+        encode_ns_sum.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
         Ok(())
     })?;
     let export_wall_s = export_start.elapsed().as_secs_f64();
     let images_per_sec = files.len() as f64 / export_wall_s.max(1e-9);
+    let decode_sum_s = decode_ns_sum.load(Ordering::Relaxed) as f64 / 1e9;
+    let gpu_sum_s = gpu_ns_sum.load(Ordering::Relaxed) as f64 / 1e9;
+    let encode_sum_s = encode_ns_sum.load(Ordering::Relaxed) as f64 / 1e9;
 
     println!("METRIC file_count={}", files.len());
     println!("METRIC preview_backend={}", backend.label());
@@ -240,6 +256,13 @@ fn main() -> Result<()> {
     println!("METRIC slider_ms_median={:.2}", median_ms(&slider_samples));
     println!("METRIC export_wall_s={:.2}", export_wall_s);
     println!("METRIC export_images_per_sec={:.3}", images_per_sec);
+    println!("METRIC export_decode_sum_s={:.2}", decode_sum_s);
+    println!("METRIC export_gpu_apply_sum_s={:.2}", gpu_sum_s);
+    println!("METRIC export_encode_sum_s={:.2}", encode_sum_s);
+    println!(
+        "METRIC export_gpu_apply_overlap_factor={:.2}",
+        gpu_sum_s / export_wall_s.max(1e-9)
+    );
     println!("METRIC export_out_dir={}", out_dir.display());
 
     Ok(())

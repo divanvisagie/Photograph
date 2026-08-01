@@ -770,13 +770,21 @@ fn apply_gpu(src: &RgbaImage, state: &EditState) -> Option<RgbaImage> {
         out_extent,
     );
 
-    ctx.queue.submit([encoder.finish()]);
+    let submission_index = ctx.queue.submit([encoder.finish()]);
     let slice = readback.slice(..);
     let (tx, rx) = mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = tx.send(result);
     });
-    let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
+    // Wait on this call's own submission index, not "whatever's most recent" (the
+    // default for `wait_indefinitely()`). Under concurrent callers (e.g. rayon
+    // export workers sharing one Device/Queue), waiting on the most recent
+    // submission convoys every thread onto whichever submission happened to land
+    // last, serializing work that could otherwise overlap.
+    let _ = ctx.device.poll(wgpu::PollType::Wait {
+        submission_index: Some(submission_index),
+        timeout: None,
+    });
     let map_result = rx.recv().ok()?;
     if map_result.is_err() {
         report_gpu_fallback_once();
