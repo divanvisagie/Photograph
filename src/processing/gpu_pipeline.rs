@@ -776,14 +776,17 @@ fn apply_gpu(src: &RgbaImage, state: &EditState) -> Option<RgbaImage> {
     slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = tx.send(result);
     });
-    let _ = ctx.device.poll(wgpu::Maintain::wait());
+    let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
     let map_result = rx.recv().ok()?;
     if map_result.is_err() {
         report_gpu_fallback_once();
         return None;
     }
 
-    let mapped = slice.get_mapped_range();
+    let Ok(mapped) = slice.get_mapped_range() else {
+        report_gpu_fallback_once();
+        return None;
+    };
     let unpadded = unpadded_bytes_per_row as usize;
     let padded = padded_bytes_per_row as usize;
     let mut out = vec![0_u8; unpadded * (out_h as usize)];
@@ -823,8 +826,8 @@ fn create_pipeline_bundle(
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
-        bind_group_layouts: &[&bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some(label),
@@ -909,14 +912,11 @@ fn select_adapter_index(infos: &[wgpu::AdapterInfo]) -> Option<usize> {
 }
 
 fn init_gpu_context() -> Option<GpuContext> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: NATIVE_BACKEND,
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
-    let adapters: Vec<_> = instance
-        .enumerate_adapters(NATIVE_BACKEND)
-        .into_iter()
-        .collect();
+    let adapters: Vec<_> = pollster::block_on(instance.enumerate_adapters(NATIVE_BACKEND));
     let adapter_infos: Vec<_> = adapters.iter().map(|adapter| adapter.get_info()).collect();
     let adapter_index = select_adapter_index(&adapter_infos)?;
     let adapter = adapters.into_iter().nth(adapter_index)?;
@@ -929,15 +929,14 @@ fn init_gpu_context() -> Option<GpuContext> {
     } else {
         adapter_info.driver
     };
-    let (device, queue) = pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: Some("gpu_pipeline_device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::Performance,
-        },
-        None,
-    ))
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("gpu_pipeline_device"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default(),
+        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        memory_hints: wgpu::MemoryHints::Performance,
+        trace: wgpu::Trace::Off,
+    }))
     .ok()?;
 
     let standard_entries = tex_storage_uniform_entries();
@@ -1485,12 +1484,9 @@ mod tests {
     fn adapter_info(device_type: wgpu::DeviceType, backend: wgpu::Backend) -> wgpu::AdapterInfo {
         wgpu::AdapterInfo {
             name: format!("{device_type:?}"),
-            vendor: 0,
-            device: 0,
-            device_type,
             driver: "test-driver".to_string(),
             driver_info: "test-driver-info".to_string(),
-            backend,
+            ..wgpu::AdapterInfo::new(device_type, backend)
         }
     }
 

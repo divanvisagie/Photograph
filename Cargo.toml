@@ -20,7 +20,7 @@ toml = "1.1"
 rayon = "1.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-wgpu = "24.0.5"
+wgpu = "30"
 pollster = "1.0"
 
 [profile.release]
