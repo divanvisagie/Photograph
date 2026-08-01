@@ -1,4 +1,4 @@
-# 6. Apply Highlight Recovery During RAW Develop
+# 0009. Apply Highlight Recovery During RAW Develop
 
 Date: 2026-03-01
 
@@ -37,7 +37,7 @@ improves highlight gradation without changing the downstream GPU/CPU processing
 pipeline.
 
 Both preview (Stage B full decode) and export flow through `open_image()`, so
-recovery policy is shared automatically (per [ADR-0003](0003-shared-preview-export-backend.md)).
+recovery policy is shared automatically (per [ADR-0005](0005-shared-preview-export-backend.md)).
 
 Implemented in:
 - `src/processing/highlights.rs` (recovery algorithm)

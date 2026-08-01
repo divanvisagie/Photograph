@@ -1,4 +1,4 @@
-# 2. CPU Fallback Is Debug-Only
+# 0004. CPU Fallback Is Debug-Only
 
 Date: 2026-02-28
 

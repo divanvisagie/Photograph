@@ -1,4 +1,4 @@
-# 5. Guard Against False-Positive Parity Tests
+# 0007. Guard Against False-Positive Parity Tests
 
 Date: 2026-02-28
 

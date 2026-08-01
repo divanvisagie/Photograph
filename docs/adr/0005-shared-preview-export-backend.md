@@ -1,4 +1,4 @@
-# 3. One Processing Backend Contract for Preview and Export
+# 0005. One Processing Backend Contract for Preview and Export
 
 Date: 2026-02-28
 
@@ -13,7 +13,7 @@ Divergent preview/export backends increase parity bugs and maintenance cost.
 ## Decision
 
 Both preview and export attempt `gpu_pipeline::try_apply` first and follow the same
-fallback policy (see [ADR-0002](0002-cpu-fallback-debug-only.md)).
+fallback policy (see [ADR-0004](0004-cpu-fallback-debug-only.md)).
 
 ## Consequences
 

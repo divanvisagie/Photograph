@@ -161,7 +161,7 @@ It prints `METRIC ...` lines for preview latency and export throughput.
 Pipeline and architecture decisions are documented in `/docs`:
 
 - [Pipeline Architecture](docs/pipeline-architecture.md)
-- [Architecture Decision Records](docs/adr/README.md) ([process](docs/ADR.md))
+- [Architecture Decision Records](docs/adr/README.md)
 - [RAW Load Latency Notes](docs/raw-load-latency.md)
 
 These docs include Mermaid diagrams (flowcharts and sequence diagrams) for preview processing, export processing, and backend policy enforcement.

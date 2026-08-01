@@ -1,4 +1,4 @@
-# 4. Preserve Generation-Based Preview Cancellation
+# 0006. Preserve Generation-Based Preview Cancellation
 
 Date: 2026-02-28
 

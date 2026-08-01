@@ -1,4 +1,4 @@
-# 1. Require Vulkan GPU (Prefer Discrete, Allow Integrated)
+# 0003. Require Vulkan GPU (Prefer Discrete, Allow Integrated)
 
 Date: 2026-02-28
 
