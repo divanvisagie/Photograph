@@ -22,14 +22,14 @@ use crate::{
     viewer::{PreviewBackend, Viewer},
 };
 
-const BROWSER_WIDTH: f32 = 550.0;
+const SIDEBAR_WIDTH: f32 = 220.0;
 const TOOLS_WIDTH: f32 = 320.0;
+const FILMSTRIP_HEIGHT: f32 = 100.0;
 
-struct ViewerWindow {
-    viewer: Viewer,
-    open: bool,
-    spawn_pos: egui::Pos2,
-    placed: bool,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ViewMode {
+    Library,
+    Detail,
 }
 
 #[derive(Clone)]
@@ -124,13 +124,11 @@ impl RenderSpeedProfile {
 /// Top-level `eframe` application state for the Photograph UI.
 pub struct PhotographApp {
     browser: Browser,
-    preview_backend: PreviewBackend,
     preview_status_label: String,
     preview_status_details: Option<String>,
     preview_status_vendor: Option<GpuVendor>,
-    viewers: Vec<ViewerWindow>,
-    active_viewer: Option<usize>,
-    next_id: usize,
+    viewer: Viewer,
+    view_mode: ViewMode,
     prev_selected: Option<PathBuf>,
     show_render_window: bool,
     render_output_path: String,
@@ -148,7 +146,6 @@ pub struct PhotographApp {
     render_failed: usize,
     render_current: String,
     render_rx: Option<mpsc::Receiver<RenderEvent>>,
-    tools_window_was_visible: bool,
     config: AppConfig,
 }
 
@@ -287,13 +284,11 @@ impl PhotographApp {
             preview_status_summary(preview_backend);
         Self {
             browser,
-            preview_backend,
             preview_status_label,
             preview_status_details,
             preview_status_vendor,
-            viewers: Vec::new(),
-            active_viewer: None,
-            next_id: 0,
+            viewer: Viewer::new(0, preview_backend),
+            view_mode: ViewMode::Library,
             prev_selected: None,
             show_render_window: false,
             render_output_path: output_dir.display().to_string(),
@@ -311,19 +306,46 @@ impl PhotographApp {
             render_failed: 0,
             render_current: String::new(),
             render_rx: None,
-            tools_window_was_visible: false,
             config,
         }
     }
 
+    /// Number of photos a render job would currently target, without
+    /// touching disk (cheap enough to call every frame for the button label).
+    fn render_target_count(&self) -> usize {
+        let marked = self.browser.marked_count();
+        if marked > 0 {
+            marked
+        } else if self.browser.selected.is_some() {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Builds render tasks from marked photos, falling back to the currently
+    /// selected photo if nothing is marked. Edit state for the active photo
+    /// comes from the live `Viewer`; other marked photos load their sidecar.
     fn build_render_tasks(&self) -> Vec<RenderTask> {
-        self.viewers
-            .iter()
-            .filter_map(|vw| {
-                vw.viewer.path().map(|path| RenderTask {
-                    source_path: path.clone(),
-                    edit_state: vw.viewer.edit_state.clone(),
-                })
+        let mut paths = self.browser.marked_paths();
+        if paths.is_empty() {
+            if let Some(path) = &self.browser.selected {
+                paths.push(path.clone());
+            }
+        }
+
+        paths
+            .into_iter()
+            .map(|source_path| {
+                let edit_state = if self.viewer.path() == Some(&source_path) {
+                    self.viewer.edit_state.clone()
+                } else {
+                    EditState::load(&source_path).unwrap_or_default()
+                };
+                RenderTask {
+                    source_path,
+                    edit_state,
+                }
             })
             .collect()
     }
@@ -346,7 +368,7 @@ impl PhotographApp {
         }
         let tasks = self.build_render_tasks();
         if tasks.is_empty() {
-            self.render_status = "No open images to render".to_string();
+            self.render_status = "No images selected to render".to_string();
             return;
         }
         if let Err(err) = std::fs::create_dir_all(&output_dir) {
@@ -485,36 +507,27 @@ impl PhotographApp {
             self.render_rx = Some(rx);
         }
     }
-}
 
-fn next_viewer_spawn_pos(index: usize, viewport_rect: Option<egui::Rect>) -> egui::Pos2 {
-    const STEP: f32 = 40.0;
-
-    // Place viewer just past the browser's default width
-    let base_x = BROWSER_WIDTH + 24.0;
-    let base_y = 32.0;
-
-    let raw_x = base_x + STEP * index as f32;
-    let raw_y = base_y + STEP * index as f32;
-
-    let pos = egui::pos2(raw_x, raw_y);
-    tracing::debug!(
-        index,
-        base_x,
-        base_y,
-        x = pos.x,
-        y = pos.y,
-        ?viewport_rect,
-        "viewer spawn position"
-    );
-    pos
-}
-
-fn viewer_default_size(content_rect: egui::Rect) -> egui::Vec2 {
-    // Fill the space between browser and tools
-    let width = (content_rect.width() - BROWSER_WIDTH - TOOLS_WIDTH - 80.0).max(400.0);
-    let height = (content_rect.height() - 16.0).max(300.0);
-    egui::vec2(width, height)
+    /// Steps the active photo to the previous/next image (by `delta`) in the
+    /// current folder, wrapping around, for filmstrip-style keyboard nav.
+    fn step_active_photo(&mut self, delta: i32, ctx: &egui::Context) {
+        let Some(current) = self.viewer.path().cloned() else {
+            return;
+        };
+        let images = &self.browser.images;
+        let Some(idx) = images.iter().position(|(p, _)| *p == current) else {
+            return;
+        };
+        let len = images.len() as i32;
+        if len == 0 {
+            return;
+        }
+        let new_idx = (idx as i32 + delta).rem_euclid(len) as usize;
+        let new_path = images[new_idx].0.clone();
+        self.viewer.set_image(new_path.clone(), ctx);
+        self.browser.selected = Some(new_path.clone());
+        self.prev_selected = Some(new_path);
+    }
 }
 
 fn default_render_dir() -> PathBuf {
@@ -779,50 +792,33 @@ impl eframe::App for PhotographApp {
             self.config.window_height = Some(rect.height());
         }
 
-        // Poll background work before rendering windows
+        // Poll background work before rendering panels
         self.browser.poll(ctx);
-        for vw in &mut self.viewers {
-            vw.viewer.drain(ctx);
-        }
+        self.viewer.drain(ctx);
         self.poll_render_events();
 
-        // When a thumbnail is clicked, open or activate a viewer for that path
+        // When a thumbnail is clicked (grid or filmstrip), load it into the
+        // single viewer and switch to the Detail view.
         let sel = self.browser.selected.clone();
         if sel != self.prev_selected {
-            if let Some(ref path) = sel {
-                // Find existing viewer for this path, or create a new one
-                let existing = self
-                    .viewers
-                    .iter_mut()
-                    .find(|vw| vw.viewer.path() == Some(path));
-                if let Some(vw) = existing {
-                    vw.open = true;
-                    self.active_viewer = Some(vw.viewer.id());
-                } else {
-                    let id = self.next_id;
-                    self.next_id += 1;
-                    let mut viewer = Viewer::new(id, self.preview_backend);
-                    viewer.set_image(path.clone(), ctx);
-                    let open_count = self.viewers.iter().filter(|v| v.open).count();
-                    let spawn_pos = next_viewer_spawn_pos(open_count, viewport_rect);
-                    self.viewers.push(ViewerWindow {
-                        viewer,
-                        open: true,
-                        spawn_pos,
-                        placed: false,
-                    });
-                    self.active_viewer = Some(id);
-                }
+            if let Some(path) = sel.clone() {
+                self.viewer.set_image(path, ctx);
+                self.view_mode = ViewMode::Detail;
             }
             self.prev_selected = sel;
         }
 
-        // Remove closed viewers; clear active if it was closed
-        self.viewers.retain(|vw| vw.open);
-        if let Some(active_id) = self.active_viewer {
-            if !self.viewers.iter().any(|vw| vw.viewer.id() == active_id) {
-                // Active was closed — fall back to last viewer if any
-                self.active_viewer = self.viewers.last().map(|vw| vw.viewer.id());
+        // Keyboard navigation while in Detail mode (skip while a text field
+        // like the sidebar path bar has focus).
+        if self.view_mode == ViewMode::Detail && ctx.memory(|m| m.focused().is_none()) {
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.view_mode = ViewMode::Library;
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
+                self.step_active_photo(1, ctx);
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
+                self.step_active_photo(-1, ctx);
             }
         }
 
@@ -851,9 +847,71 @@ impl eframe::App for PhotographApp {
                 });
             });
         });
-        // Empty central panel as background (required by egui)
-        let central = egui::CentralPanel::default().show(ui, |_ui| {});
-        let content_rect = central.response.rect;
+        // Left sidebar — locations + current folder's subfolders
+        egui::Panel::left("sidebar")
+            .resizable(true)
+            .default_size(SIDEBAR_WIDTH)
+            .min_size(160.0)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        self.browser.show_sidebar(ui);
+                    });
+            });
+
+        // Tools panel + filmstrip only apply while viewing/editing a photo
+        if self.view_mode == ViewMode::Detail {
+            egui::Panel::right("tools")
+                .resizable(false)
+                .exact_size(TOOLS_WIDTH)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            self.viewer.show_controls(ui);
+                        });
+                });
+
+            egui::Panel::bottom("filmstrip")
+                .resizable(false)
+                .exact_size(FILMSTRIP_HEIGHT)
+                .show(ui, |ui| {
+                    let active_path = self.viewer.path().map(|p| p.as_path());
+                    if let Some(clicked) = self.browser.show_filmstrip(ui, active_path) {
+                        self.viewer.set_image(clicked.clone(), ctx);
+                        self.browser.selected = Some(clicked.clone());
+                        self.prev_selected = Some(clicked);
+                    }
+                });
+        }
+
+        // Central panel — Library grid or Detail image view
+        egui::CentralPanel::default().show(ui, |ui| match self.view_mode {
+            ViewMode::Library => {
+                self.browser.show_contents(ui, ctx);
+            }
+            ViewMode::Detail => {
+                ui.horizontal(|ui| {
+                    if ui.button("\u{2039} Back to Library").clicked() {
+                        self.view_mode = ViewMode::Library;
+                    }
+                    ui.separator();
+                    ui.label(self.viewer.filename());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(path) = self.viewer.path().cloned() {
+                            let marked = self.browser.is_marked(&path);
+                            let star = if marked { "\u{2605} Marked" } else { "\u{2606} Mark" };
+                            if ui.selectable_label(marked, star).clicked() {
+                                self.browser.toggle_mark(path);
+                            }
+                        }
+                    });
+                });
+                ui.separator();
+                self.viewer.show_image(ui);
+            }
+        });
 
         // Render window
         if self.show_render_window {
@@ -952,14 +1010,17 @@ impl eframe::App for PhotographApp {
                     });
 
                     ui.add_space(8.0);
+                    let render_count = self.render_target_count();
                     let label = if self.render_in_progress {
                         "Rendering...".to_string()
+                    } else if self.browser.marked_count() > 0 {
+                        format!("Render {} Marked Image(s)", render_count)
                     } else {
-                        format!("Render {} Open Image(s)", self.viewers.len())
+                        format!("Render {} Image(s)", render_count)
                     };
                     if ui
                         .add_enabled(
-                            !self.viewers.is_empty() && !self.render_in_progress,
+                            render_count > 0 && !self.render_in_progress,
                             egui::Button::new(label),
                         )
                         .clicked()
@@ -1003,110 +1064,12 @@ impl eframe::App for PhotographApp {
             self.show_render_window = show_render_window;
         }
 
-        // Debug: collect window rects for the debug overlay
-        #[cfg(debug_assertions)]
-        let mut debug_windows: Vec<(&str, egui::Rect)> = Vec::new();
-
-        // Browser window — path bar + thumbnail grid (left side, no close button)
-        {
-            let height = (content_rect.height() - 50.0).max(1.0);
-            let window = egui::Window::new("Browser")
-                .id(egui::Id::new("browser_window"))
-                .resizable(true)
-                .collapsible(true)
-                .anchor(egui::Align2::LEFT_TOP, egui::vec2(0.0, content_rect.top()))
-                .default_size(egui::vec2(BROWSER_WIDTH, height));
-
-            let resp = window.show(ctx, |ui| {
-                self.browser.show_contents(ui, ctx);
-            });
-            #[cfg(debug_assertions)]
-            if let Some(inner) = resp {
-                debug_windows.push(("Browser", inner.response.rect));
-            }
-        }
-
-        // Render each viewer window
-        let viewer_size = viewer_default_size(content_rect);
-        let mut newly_active: Option<usize> = None;
-        for vw in &mut self.viewers {
-            let title = vw.viewer.filename();
-            let window_id = format!("viewer_{}", vw.viewer.id());
-            let id = egui::Id::new(&window_id);
-
-            let mut window = egui::Window::new(&title)
-                .id(id)
-                .open(&mut vw.open)
-                .default_size(viewer_size)
-                .default_pos(vw.spawn_pos);
-
-            // Force position on first frame so egui doesn't ignore the offset
-            if !vw.placed {
-                window = window.current_pos(vw.spawn_pos);
-                vw.placed = true;
-            }
-
-            let resp = window.show(ctx, |ui| {
-                vw.viewer.show_image(ui);
-            });
-
-            // Detect clicks inside this viewer window to make it active
-            if let Some(inner) = resp {
-                let clicked_inside =
-                    inner.response.hovered() && ctx.input(|i| i.pointer.any_pressed());
-                if clicked_inside {
-                    newly_active = Some(vw.viewer.id());
-                }
-                #[cfg(debug_assertions)]
-                debug_windows.push(("Viewer", inner.response.rect));
-            }
-        }
-        if let Some(id) = newly_active {
-            self.active_viewer = Some(id);
-        }
-
-        // Tool window — controls + EXIF for the active viewer
-        let tools_visible = self.active_viewer.is_some();
-        let tools_just_opened = tools_visible && !self.tools_window_was_visible;
-        if tools_visible {
-            let active_id = self.active_viewer.unwrap();
-            if let Some(vw) = self
-                .viewers
-                .iter_mut()
-                .find(|vw| vw.viewer.id() == active_id)
-            {
-                let label = format!("Tools — {}", vw.viewer.filename());
-                let mut window = egui::Window::new(&label)
-                    .id(egui::Id::new("tools_window"))
-                    //.order(egui::Order::Foreground)
-                    .resizable(false)
-                    .movable(true);
-
-                let height = (content_rect.height() - 50.0).max(1.0);
-                // Anchor to top-right so the window sits flush against
-                // the right edge, accounting for all frame/chrome automatically.
-                window = window
-                    .anchor(egui::Align2::RIGHT_TOP, egui::vec2(0.0, content_rect.top()))
-                    .fixed_size(egui::vec2(TOOLS_WIDTH, height))
-                    .movable(false);
-
-                let resp = window.show(ctx, |ui| {
-                    vw.viewer.show_controls(ui);
-                });
-                #[cfg(debug_assertions)]
-                if let Some(inner) = resp {
-                    debug_windows.push(("Tools", inner.response.rect));
-                }
-            }
-        }
-        self.tools_window_was_visible = tools_visible;
-
         #[cfg(debug_assertions)]
         {
             egui::Window::new("Debug")
                 .id(egui::Id::new("debug_window"))
                 .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -10.0])
-                .default_size([300.0, 200.0])
+                .default_size([300.0, 150.0])
                 .show(ctx, |ui| {
                     if let Some(rect) = viewport_rect {
                         ui.label(format!(
@@ -1115,36 +1078,20 @@ impl eframe::App for PhotographApp {
                             rect.height()
                         ));
                     }
-                    ui.label(format!(
-                        "Content rect: {:.0},{:.0} -> {:.0}x{:.0}",
-                        content_rect.left(),
-                        content_rect.top(),
-                        content_rect.width(),
-                        content_rect.height()
-                    ));
-                    ui.label(format!(
-                        "Viewer default size: {:.0}x{:.0}",
-                        viewer_size.x, viewer_size.y
-                    ));
-                    ui.separator();
-                    for (name, rect) in &debug_windows {
-                        ui.label(format!(
-                            "{}: {:.0},{:.0}  {:.0}x{:.0}",
-                            name,
-                            rect.left(),
-                            rect.top(),
-                            rect.width(),
-                            rect.height()
-                        ));
-                    }
+                    ui.label(match self.view_mode {
+                        ViewMode::Library => "Mode: Library".to_string(),
+                        ViewMode::Detail => format!(
+                            "Mode: Detail ({})",
+                            self.viewer.path().map(|p| p.display().to_string()).unwrap_or_default()
+                        ),
+                    });
+                    ui.label(format!("Marked: {}", self.browser.marked_count()));
                 });
         }
     }
 
     fn on_exit(&mut self) {
-        for vw in &self.viewers {
-            vw.viewer.save_edits();
-        }
+        self.viewer.save_edits();
         self.config.browse_path = Some(self.browser.current_dir.clone());
         self.config.save();
     }

@@ -255,11 +255,6 @@ impl Viewer {
         }
     }
 
-    /// Returns the viewer's stable window identifier.
-    pub fn id(&self) -> usize {
-        self.id
-    }
-
     pub fn is_loading(&self) -> bool {
         self.loading
     }
