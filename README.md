@@ -38,6 +38,17 @@ Current support intent: Ubuntu Linux only (see [ADR-0012](docs/adr/0012-drop-mac
 
 ## Install
 
+### Linux (.deb, recommended)
+
+```bash
+sudo apt install -y dpkg-dev
+make install
+```
+
+Builds and installs the `.deb` locally via the `Makefile` (see [Packaging](#packaging)). This is
+the primary install path — it's the only one that includes network-drive browsing
+([ADR-0013](docs/adr/0013-network-mounts-deb-only.md)).
+
 ### Linux (Snap)
 
 ```bash
@@ -114,8 +125,9 @@ PHOTOGRAPH_DEBUG_ALLOW_CPU_FALLBACK=1 PHOTOGRAPH_PREVIEW_BACKEND=cpu cargo run -
 
 ## Packaging
 
-The `Makefile` builds a Linux `.deb`. `make build` and `make install` are aliases for `make
-build-linux`/`make install-linux`.
+The `Makefile` builds both a `.deb` and a Snap. `make build` builds both (`make build-deb` and
+`make snap`); `make install` only installs the `.deb` (`make install-linux`, aliased from `make
+install`) — it never touches the Snap.
 
 Icon assets are derived from the SVG source at `packaging/linux/photograph.svg`:
 
@@ -128,9 +140,16 @@ This regenerates the embedded runtime PNG (`assets/photograph-icon-128.png`).
 Common targets:
 
 ```bash
-make build          # build .deb on Linux
-make install        # install the built .deb
+make build          # build both .deb and snap
+make build-deb      # build just the .deb
+make install        # build and install the .deb (never the snap)
+make snap           # build just the snap
+make snap-install   # build and install the snap (--dangerous, local testing)
 ```
+
+The Snap build disables the `network-mounts` Cargo feature (see
+[ADR-0013](docs/adr/0013-network-mounts-deb-only.md)): the browser sidebar's "NETWORK" section
+(active SMB/NFS/GVfs shares) only appears in the `.deb` build. Use the `.deb` if you need it.
 
 Linux packaging assets live under `packaging/linux/`.
 
@@ -153,6 +172,7 @@ Pipeline and architecture decisions are documented in `/docs`:
 - [Pipeline Architecture](docs/pipeline-architecture.md)
 - [Architecture Decision Records](docs/adr/README.md)
 - [RAW Load Latency Notes](docs/raw-load-latency.md)
+- [Snap Packaging: Network Mount Access](docs/snap-network-access.md)
 
 These docs include Mermaid diagrams (flowcharts and sequence diagrams) for preview processing, export processing, and backend policy enforcement.
 

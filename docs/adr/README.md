@@ -50,6 +50,7 @@ mechanics of adding one.
 | [0010](0010-snap-packaging-vulkan-gpu-2404.md) | Package for Linux via snap, using the gpu-2404 content interface for Vulkan | Accepted |
 | [0011](0011-restore-macos-metal-backend.md) | Restore macOS support via a Metal GPU backend | Superseded by [ADR-0012](0012-drop-macos-support-linux-only.md) |
 | [0012](0012-drop-macos-support-linux-only.md) | Drop macOS support; Photograph is Linux-only | Accepted |
+| [0013](0013-network-mounts-deb-only.md) | Network drive browsing is .deb-only; the Snap build disables it | Accepted |
 
 ## Decision Relationship
 
@@ -73,3 +74,5 @@ flowchart TD
 - Future `wgpu`/driver changes require backend policy adjustments.
 - Renewed macOS demand that native alternatives (Photos, third-party RAW editors) don't cover —
   see ADR-0012 for what it would actually cost to support again.
+- Snap network-share browsing becomes a priority again — see ADR-0013 for the rejected
+  `xdg-desktop-portal` alternative.

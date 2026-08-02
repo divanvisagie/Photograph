@@ -53,6 +53,11 @@ parts:
     plugin: rust
     source: .
     rust-channel: stable
+    # Snap confinement can't grant GVfs mount access without a privileged
+    # Store-review interface (see docs/adr/0013-network-mounts-deb-only.md),
+    # so the Snap build ships without the network-mounts feature entirely
+    # rather than a browser "NETWORK" section that silently finds nothing.
+    rust-no-default-features: true
     override-pull: |
       craftctl default
       craftctl set version="$(awk -F\" '/^version = / { print $2; exit }' Cargo.toml)"

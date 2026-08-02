@@ -28,7 +28,7 @@ SNAP_FILE := $(APP_NAME)_$(VERSION)_$(ARCH).snap
 SNAP_SCREENSHOT_SRC := docs/photograph-ui.png
 SNAP_SCREENSHOT_DST := docs/photograph-ui-store.jpg
 
-.PHONY: dev build build-linux build-unsupported install install-linux install-unsupported clean-deb clean-icons icons icon-runtime snap snap-install snap-publish snap-screenshot docs
+.PHONY: dev build build-linux build-deb build-unsupported install install-linux install-unsupported clean-deb clean-icons icons icon-runtime snap snap-install snap-publish snap-screenshot docs
 
 dev:
 	@command -v cargo-watch >/dev/null 2>&1 || { echo "cargo-watch is required: cargo install cargo-watch"; exit 1; }
@@ -60,7 +60,9 @@ icon-runtime:
 	render_png 128 "$(RUNTIME_ICON_PNG)"
 	@echo "Generated runtime icon: $(RUNTIME_ICON_PNG)"
 
-build-linux:
+build-linux: build-deb snap
+
+build-deb:
 	@command -v dpkg-deb >/dev/null 2>&1 || { echo "dpkg-deb is required (install dpkg-dev)."; exit 1; }
 	@test -f "$(LINUX_DESKTOP_SRC)" || { echo "missing launcher file: $(LINUX_DESKTOP_SRC)"; exit 1; }
 	@test -f "$(LINUX_ICON_SRC)" || { echo "missing icon file: $(LINUX_ICON_SRC)"; exit 1; }
@@ -90,7 +92,7 @@ build-linux:
 	@echo "Built package: $(DEB_PATH)"
 	@echo "Install with: sudo apt install ./$(DEB_PATH)"
 
-install-linux: build-linux
+install-linux: build-deb
 	sudo apt install --reinstall -y "./$(DEB_PATH)"
 
 clean-deb:

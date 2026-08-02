@@ -1,9 +1,19 @@
 [package]
 name = "photograph"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 default-run = "photograph"
 license = "GPL-2.0-only"
+
+[features]
+default = ["network-mounts"]
+# Scans /proc/mounts and XDG_RUNTIME_DIR/gvfs for active network shares and
+# surfaces them in the browser sidebar's "NETWORK" section. Off in the Snap
+# build (see docs/adr/0013-network-mounts-deb-only.md): the Snap Store rejects
+# uploads plugging the privileged system-files interface that GVfs access
+# needs, so the Snap build disables this feature entirely rather than ship it
+# half-working. Use the .deb if you need it.
+network-mounts = []
 
 [dependencies]
 eframe = "0.35"

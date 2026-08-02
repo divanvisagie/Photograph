@@ -142,6 +142,7 @@ impl Browser {
     /// Finds currently-mounted network shares: active GVfs mounts (the way
     /// GNOME/Nautilus surfaces `smb://`/`sftp://` connections) plus classic
     /// NFS/CIFS/sshfs entries from `/proc/mounts`.
+    #[cfg(feature = "network-mounts")]
     fn scan_network_locations(&mut self) {
         self.network_locations.clear();
         let mut seen = HashSet::new();
@@ -202,6 +203,14 @@ impl Browser {
         }
 
         self.network_locations.sort_by(|a, b| a.1.cmp(&b.1));
+    }
+
+    /// No-op when the `network-mounts` feature is disabled (the Snap build,
+    /// per docs/adr/0013-network-mounts-deb-only.md): `network_locations`
+    /// stays empty, so the sidebar's "NETWORK" section never renders.
+    #[cfg(not(feature = "network-mounts"))]
+    fn scan_network_locations(&mut self) {
+        self.network_locations.clear();
     }
 
     fn navigate(&mut self, dir: PathBuf) {
@@ -592,6 +601,7 @@ fn is_image(path: &std::path::Path) -> bool {
 /// Turns a raw GVfs mount directory name (e.g.
 /// `smb-share:server=nas,share=photos`) into a readable label like
 /// `photos on nas`. Falls back to the raw name for unrecognized schemes.
+#[cfg(feature = "network-mounts")]
 fn friendly_gvfs_label(raw: &str) -> String {
     let Some((scheme, rest)) = raw.split_once(':') else {
         return raw.to_string();
@@ -618,6 +628,7 @@ fn friendly_gvfs_label(raw: &str) -> String {
 
 /// Decodes the octal escapes (`\040` for space, etc.) `/proc/mounts` uses
 /// for whitespace and backslashes in mount-point paths.
+#[cfg(feature = "network-mounts")]
 fn unescape_mount_field(field: &str) -> String {
     let bytes = field.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
@@ -636,7 +647,7 @@ fn unescape_mount_field(field: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "network-mounts"))]
 mod tests {
     use super::*;
 
