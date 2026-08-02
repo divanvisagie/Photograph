@@ -830,11 +830,11 @@ impl eframe::App for PhotographApp {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(vendor) = self.preview_status_vendor {
-                        let dot = egui::RichText::new("●")
-                            .color(vendor.badge_fill())
-                            .size(14.0);
-                        ui.label(dot)
-                            .on_hover_text(format!("{} GPU", vendor.badge_text()));
+                        let (rect, response) =
+                            ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        ui.painter()
+                            .circle_filled(rect.center(), 5.0, vendor.badge_fill());
+                        response.on_hover_text(format!("{} GPU", vendor.badge_text()));
                     }
                     let response = ui.label(
                         egui::RichText::new(&self.preview_status_label)
