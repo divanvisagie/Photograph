@@ -145,6 +145,7 @@ make build-deb      # build just the .deb
 make install        # build and install the .deb (never the snap)
 make snap           # build just the snap
 make snap-install   # build and install the snap (--dangerous, local testing)
+make release        # build the .deb and publish it as a GitHub release (requires gh CLI, logged in)
 ```
 
 The Snap build disables the `network-mounts` Cargo feature (see

@@ -28,7 +28,7 @@ SNAP_FILE := $(APP_NAME)_$(VERSION)_$(ARCH).snap
 SNAP_SCREENSHOT_SRC := docs/photograph-ui.png
 SNAP_SCREENSHOT_DST := docs/photograph-ui-store.jpg
 
-.PHONY: dev build build-linux build-deb build-unsupported install install-linux install-unsupported clean-deb clean-icons icons icon-runtime snap snap-install snap-publish snap-screenshot docs
+.PHONY: dev build build-linux build-deb build-unsupported install install-linux install-unsupported clean-deb clean-icons icons icon-runtime snap snap-install snap-publish snap-screenshot release docs
 
 dev:
 	@command -v cargo-watch >/dev/null 2>&1 || { echo "cargo-watch is required: cargo install cargo-watch"; exit 1; }
@@ -97,6 +97,11 @@ install-linux: build-deb
 
 clean-deb:
 	rm -rf "$(DEB_DIR)"
+
+release: build-deb
+	@command -v gh >/dev/null 2>&1 || { echo "gh CLI is required: https://cli.github.com"; exit 1; }
+	gh release create "v$(VERSION)" "$(DEB_PATH)" --title "v$(VERSION)" --generate-notes
+	@echo "Created GitHub release v$(VERSION) with $(DEB_PATH)"
 
 snap:
 	@command -v snapcraft >/dev/null 2>&1 || { echo "snapcraft is required: sudo snap install snapcraft --classic"; exit 1; }
