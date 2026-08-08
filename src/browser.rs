@@ -28,8 +28,13 @@ pub struct Browser {
     thumbnails: HashMap<PathBuf, ThumbState>,
     tx: mpsc::SyncSender<ThumbResult>,
     rx: mpsc::Receiver<ThumbResult>,
+    /// The focused/open photo — drives the Edit target and highlight.
     pub selected: Option<PathBuf>,
-    marked: HashSet<PathBuf>,
+    /// Anchor for shift-click range selection — the last plain- or Ctrl-clicked item.
+    select_anchor: Option<PathBuf>,
+    /// Working set built via Ctrl-click (toggle) or Shift-click (range); shown as
+    /// checkboxes, drives the filmstrip, and is what Render targets.
+    pub selection: HashSet<PathBuf>,
     path_edit: String,
     locations: Vec<(PathBuf, String)>,
     network_locations: Vec<(PathBuf, String)>,
@@ -56,7 +61,8 @@ impl Browser {
             tx,
             rx,
             selected: None,
-            marked: HashSet::new(),
+            select_anchor: None,
+            selection: HashSet::new(),
             locations: Vec::new(),
             network_locations: Vec::new(),
             scan_error: None,
@@ -217,26 +223,27 @@ impl Browser {
         self.pending_nav = Some(dir);
     }
 
-    /// Toggles whether `path` is marked for batch export.
-    pub fn toggle_mark(&mut self, path: PathBuf) {
-        if !self.marked.remove(&path) {
-            self.marked.insert(path);
+    /// Toggles whether `path` is in the working selection (checkbox, filmstrip,
+    /// Render target).
+    pub fn toggle_selection(&mut self, path: PathBuf) {
+        if !self.selection.remove(&path) {
+            self.selection.insert(path);
         }
     }
 
-    /// Paths currently marked for batch export.
-    pub fn marked_paths(&self) -> Vec<PathBuf> {
-        self.marked.iter().cloned().collect()
+    /// Paths currently in the working selection.
+    pub fn selected_paths(&self) -> Vec<PathBuf> {
+        self.selection.iter().cloned().collect()
     }
 
-    /// Number of paths currently marked for batch export.
-    pub fn marked_count(&self) -> usize {
-        self.marked.len()
+    /// Number of paths currently in the working selection.
+    pub fn selection_count(&self) -> usize {
+        self.selection.len()
     }
 
-    /// Whether `path` is currently marked for batch export.
-    pub fn is_marked(&self, path: &std::path::Path) -> bool {
-        self.marked.contains(path)
+    /// Whether `path` is currently in the working selection.
+    pub fn is_selected(&self, path: &std::path::Path) -> bool {
+        self.selection.contains(path)
     }
 
     fn queue_pending_thumbs(&mut self, ctx: &egui::Context) {
@@ -296,7 +303,8 @@ impl Browser {
             self.current_dir = nav;
             self.path_edit = self.current_dir.display().to_string();
             self.selected = None;
-            self.marked.clear();
+            self.select_anchor = None;
+            self.selection.clear();
             self.scan_locations();
             self.scan_network_locations();
             self.scan();
@@ -393,11 +401,17 @@ impl Browser {
     }
 
     /// Renders the thumbnail grid (Library mode central panel content).
-    /// Plain click selects+opens a photo; Ctrl/Cmd-click toggles it as
-    /// marked for batch export without changing the open photo.
-    pub fn show_contents(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
-        let mut new_sel: Option<PathBuf> = None;
-        let current_sel = self.selected.clone();
+    /// Plain click focuses a photo and resets the selection to just that one;
+    /// Ctrl/Cmd-click toggles a photo in/out of the selection (and moves the
+    /// range anchor there); Shift-click range-selects from the anchor. The
+    /// selection drives the checkbox badge, the filmstrip, and Render's
+    /// target set. Double-click opens the photo fullscreen — the returned
+    /// path, if any, is that open request.
+    pub fn show_contents(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) -> Option<PathBuf> {
+        let mut plain_click: Option<PathBuf> = None;
+        let mut ctrl_click: Option<PathBuf> = None;
+        let mut shift_click: Option<PathBuf> = None;
+        let mut open_request: Option<PathBuf> = None;
 
         if let Some(err) = &self.scan_error {
             ui.centered_and_justified(|ui| {
@@ -410,7 +424,6 @@ impl Browser {
         } else {
             let avail_w = ui.available_width();
             let cols = ((avail_w / (CELL + 8.0)) as usize).max(1);
-            let mut toggled_mark: Option<PathBuf> = None;
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -420,8 +433,8 @@ impl Browser {
                         .spacing([8.0, 8.0])
                         .show(ui, |ui| {
                             for (i, (path, name)) in self.images.iter().enumerate() {
-                                let is_sel = current_sel.as_ref() == Some(path);
-                                let is_marked = self.marked.contains(path);
+                                let is_focused = self.selected.as_ref() == Some(path);
+                                let is_checked = self.selection.contains(path);
                                 let thumb = match self.thumbnails.get(path) {
                                     Some(ThumbState::Ready(tex)) => {
                                         Some((tex.id(), tex.size_vec2()))
@@ -429,22 +442,27 @@ impl Browser {
                                     _ => None,
                                 };
 
-                                let clicked = draw_thumb_cell(
+                                let resp = draw_thumb_cell(
                                     ui,
                                     name,
                                     thumb,
-                                    is_sel,
-                                    is_marked,
+                                    is_focused,
+                                    is_checked,
                                     CELL,
                                     true,
                                 );
-                                if clicked {
+                                if resp.double_clicked() {
+                                    open_request = Some(path.clone());
+                                } else if resp.clicked() {
+                                    let shift_held = ui.input(|i| i.modifiers.shift);
                                     let ctrl_held =
                                         ui.input(|i| i.modifiers.ctrl || i.modifiers.mac_cmd);
                                     if ctrl_held {
-                                        toggled_mark = Some(path.clone());
+                                        ctrl_click = Some(path.clone());
+                                    } else if shift_held {
+                                        shift_click = Some(path.clone());
                                     } else {
-                                        new_sel = Some(path.clone());
+                                        plain_click = Some(path.clone());
                                     }
                                 }
 
@@ -454,29 +472,70 @@ impl Browser {
                             }
                         });
                 });
-
-            if let Some(path) = toggled_mark {
-                self.toggle_mark(path);
-            }
         }
 
-        if let Some(sel) = new_sel {
-            self.selected = Some(sel);
+        if let Some(path) = plain_click {
+            self.selected = Some(path.clone());
+            self.select_anchor = Some(path.clone());
+            self.selection.clear();
+            self.selection.insert(path);
         }
+        if let Some(path) = ctrl_click {
+            self.selected = Some(path.clone());
+            self.select_anchor = Some(path.clone());
+            self.toggle_selection(path);
+        }
+        if let Some(path) = shift_click {
+            self.extend_selection_to(path);
+        }
+
+        open_request
     }
 
-    /// Renders a horizontal filmstrip of the current directory's images at a
-    /// smaller size, reusing the same thumbnail cache as the grid. Returns
-    /// the clicked path, if any, so the caller can switch the active photo.
+    /// Extends the range selection from `select_anchor` (or `selected` if no
+    /// anchor yet) up to `path`, inclusive, in folder order.
+    fn extend_selection_to(&mut self, path: PathBuf) {
+        let anchor = self
+            .select_anchor
+            .clone()
+            .or_else(|| self.selected.clone());
+        let Some(anchor) = anchor else {
+            self.selected = Some(path.clone());
+            self.select_anchor = Some(path.clone());
+            self.selection.clear();
+            self.selection.insert(path);
+            return;
+        };
+        let anchor_idx = self.images.iter().position(|(p, _)| *p == anchor);
+        let click_idx = self.images.iter().position(|(p, _)| *p == path);
+        if let (Some(a), Some(c)) = (anchor_idx, click_idx) {
+            let (lo, hi) = if a <= c { (a, c) } else { (c, a) };
+            self.selection = self.images[lo..=hi]
+                .iter()
+                .map(|(p, _)| p.clone())
+                .collect();
+        }
+        self.selected = Some(path);
+    }
+
+    /// Renders a horizontal filmstrip of the current selection at a smaller
+    /// size, reusing the same thumbnail cache as the grid. Returns the
+    /// clicked path, if any, so the caller can switch the active photo.
     pub fn show_filmstrip(&mut self, ui: &mut egui::Ui, active: Option<&std::path::Path>) -> Option<PathBuf> {
         let mut clicked_path = None;
+        let selection: Vec<(PathBuf, String)> = self
+            .images
+            .iter()
+            .filter(|(p, _)| self.selection.contains(p))
+            .cloned()
+            .collect();
         egui::ScrollArea::horizontal()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    for (path, name) in &self.images {
+                    for (path, name) in &selection {
                         let is_active = active == Some(path.as_path());
-                        let is_marked = self.marked.contains(path);
+                        let is_checked = self.selection.contains(path);
                         let thumb = match self.thumbnails.get(path) {
                             Some(ThumbState::Ready(tex)) => Some((tex.id(), tex.size_vec2())),
                             _ => None,
@@ -486,10 +545,12 @@ impl Browser {
                             name,
                             thumb,
                             is_active,
-                            is_marked,
+                            is_checked,
                             FILMSTRIP_CELL,
                             false,
-                        ) {
+                        )
+                        .clicked()
+                        {
                             clicked_path = Some(path.clone());
                         }
                     }
@@ -507,7 +568,7 @@ fn draw_thumb_cell(
     marked: bool,
     cell: f32,
     show_label: bool,
-) -> bool {
+) -> egui::Response {
     let cell_height = if show_label { cell + 22.0 } else { cell };
     let (resp, painter) = ui.allocate_painter(egui::vec2(cell, cell_height), egui::Sense::click());
     let rect = resp.rect;
@@ -572,7 +633,7 @@ fn draw_thumb_cell(
         );
     }
 
-    resp.clicked()
+    resp
 }
 
 fn generate_thumb(path: &PathBuf, cache_dir: &PathBuf) -> Option<(Vec<u8>, usize, usize)> {

@@ -51,6 +51,7 @@ mechanics of adding one.
 | [0011](0011-restore-macos-metal-backend.md) | Restore macOS support via a Metal GPU backend | Superseded by [ADR-0012](0012-drop-macos-support-linux-only.md) |
 | [0012](0012-drop-macos-support-linux-only.md) | Drop macOS support; Photograph is Linux-only | Accepted |
 | [0013](0013-network-mounts-deb-only.md) | Network drive browsing is .deb-only; the Snap build disables it | Accepted |
+| [0014](0014-unify-grid-selection-model.md) | Unify grid selection to drive fullscreen view, filmstrip, and Render targeting | Accepted |
 
 ## Decision Relationship
 

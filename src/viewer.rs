@@ -533,7 +533,9 @@ impl Viewer {
     }
 
     /// Renders the image viewport and kicks off preview processing when needed.
-    pub fn show_image(&mut self, ui: &mut egui::Ui) {
+    /// Renders the image viewport. When `editable` is false (fullscreen preview
+    /// mode), the split-view/crop/save toolbar and crop interaction are hidden.
+    pub fn show_image(&mut self, ui: &mut egui::Ui, editable: bool) {
         // If edits arrive while processing is active, bump the requested generation
         // so the in-flight result is ignored on arrival.
         self.mark_inflight_stale_if_needed();
@@ -611,45 +613,47 @@ impl Viewer {
             }
         }
 
-        // Toolbar row
-        ui.horizontal(|ui| {
-            if ui.selectable_label(self.split_view, "Split view").clicked() {
-                self.split_view = !self.split_view;
-            }
-            if ui.selectable_label(self.crop_mode, "Crop").clicked() {
-                self.crop_mode = !self.crop_mode;
-                if self.crop_mode {
-                    // Enter crop mode: start with full image or existing applied crop
-                    self.pending_crop = Some(self.edit_state.crop.clone().unwrap_or(Rect {
-                        x: 0.0,
-                        y: 0.0,
-                        width: 1.0,
-                        height: 1.0,
-                    }));
-                } else {
-                    // Exiting crop mode discards unapplied selection
-                    self.pending_crop = None;
-                    self.crop_drag = None;
-                    self.crop_create_origin = None;
+        // Toolbar row (edit mode only)
+        if editable {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(self.split_view, "Split view").clicked() {
+                    self.split_view = !self.split_view;
                 }
-            }
+                if ui.selectable_label(self.crop_mode, "Crop").clicked() {
+                    self.crop_mode = !self.crop_mode;
+                    if self.crop_mode {
+                        // Enter crop mode: start with full image or existing applied crop
+                        self.pending_crop = Some(self.edit_state.crop.clone().unwrap_or(Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 1.0,
+                            height: 1.0,
+                        }));
+                    } else {
+                        // Exiting crop mode discards unapplied selection
+                        self.pending_crop = None;
+                        self.crop_drag = None;
+                        self.crop_create_origin = None;
+                    }
+                }
 
-            if ui
-                .add_enabled(self.has_edits(), egui::Button::new("Save"))
-                .clicked()
-            {
-                self.save_edits();
-            }
+                if ui
+                    .add_enabled(self.has_edits(), egui::Button::new("Save"))
+                    .clicked()
+                {
+                    self.save_edits();
+                }
 
-            if self.processing || self.reloading_preview {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spinner();
-                });
-            }
-        });
+                if self.processing || self.reloading_preview {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spinner();
+                    });
+                }
+            });
+        }
 
         // Crop mode toolbar: aspect ratio + apply/cancel/reset
-        if self.crop_mode {
+        if editable && self.crop_mode {
             ui.horizontal(|ui| {
                 ui.label("Aspect:");
                 for aspect in CropAspect::ALL {
@@ -736,7 +740,7 @@ impl Viewer {
                     draw_fitted_image(ui, tex, half_w, img_max_h, 1.0, egui::Vec2::ZERO);
                 });
             } else {
-                if self.crop_mode {
+                if editable && self.crop_mode {
                     // Disable zoom/pan while in crop mode
                     let img_rect =
                         draw_fitted_image(ui, tex, avail_w, img_max_h, 1.0, egui::Vec2::ZERO);

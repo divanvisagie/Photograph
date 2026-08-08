@@ -29,7 +29,10 @@ const FILMSTRIP_HEIGHT: f32 = 100.0;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ViewMode {
     Library,
-    Detail,
+    /// Fullscreen image preview, no editing tools.
+    Fullscreen,
+    /// Fullscreen preview plus the tools panel and filmstrip.
+    Edit,
 }
 
 #[derive(Clone)]
@@ -129,7 +132,6 @@ pub struct PhotographApp {
     preview_status_vendor: Option<GpuVendor>,
     viewer: Viewer,
     view_mode: ViewMode,
-    prev_selected: Option<PathBuf>,
     show_render_window: bool,
     render_output_path: String,
     render_format: RenderFormat,
@@ -330,7 +332,6 @@ impl PhotographApp {
             preview_status_vendor,
             viewer: Viewer::new(0, preview_backend),
             view_mode: ViewMode::Library,
-            prev_selected: None,
             show_render_window: false,
             render_output_path: output_dir.display().to_string(),
             render_format: RenderFormat::Jpg,
@@ -354,9 +355,9 @@ impl PhotographApp {
     /// Number of photos a render job would currently target, without
     /// touching disk (cheap enough to call every frame for the button label).
     fn render_target_count(&self) -> usize {
-        let marked = self.browser.marked_count();
-        if marked > 0 {
-            marked
+        let selected = self.browser.selection_count();
+        if selected > 0 {
+            selected
         } else if self.browser.selected.is_some() {
             1
         } else {
@@ -364,11 +365,12 @@ impl PhotographApp {
         }
     }
 
-    /// Builds render tasks from marked photos, falling back to the currently
-    /// selected photo if nothing is marked. Edit state for the active photo
-    /// comes from the live `Viewer`; other marked photos load their sidecar.
+    /// Builds render tasks from the selection, falling back to the currently
+    /// focused photo if the selection is empty. Edit state for the active
+    /// photo comes from the live `Viewer`; other selected photos load their
+    /// sidecar.
     fn build_render_tasks(&self) -> Vec<RenderTask> {
-        let mut paths = self.browser.marked_paths();
+        let mut paths = self.browser.selected_paths();
         if paths.is_empty() {
             if let Some(path) = &self.browser.selected {
                 paths.push(path.clone());
@@ -549,6 +551,31 @@ impl PhotographApp {
         }
     }
 
+    /// Renders the shared header row (back button, filename, mark toggle)
+    /// used by both the fullscreen preview and edit views.
+    fn show_photo_header(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if ui.button("\u{2039} Back to Library").clicked() {
+                self.view_mode = ViewMode::Library;
+            }
+            ui.separator();
+            ui.label(self.viewer.filename());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(path) = self.viewer.path().cloned() {
+                    let checked = self.browser.is_selected(&path);
+                    let star = if checked {
+                        "\u{2605} Marked"
+                    } else {
+                        "\u{2606} Mark"
+                    };
+                    if ui.selectable_label(checked, star).clicked() {
+                        self.browser.toggle_selection(path);
+                    }
+                }
+            });
+        });
+    }
+
     /// Steps the active photo to the previous/next image (by `delta`) in the
     /// current folder, wrapping around, for filmstrip-style keyboard nav.
     fn step_active_photo(&mut self, delta: i32, ctx: &egui::Context) {
@@ -566,8 +593,7 @@ impl PhotographApp {
         let new_idx = (idx as i32 + delta).rem_euclid(len) as usize;
         let new_path = images[new_idx].0.clone();
         self.viewer.set_image(new_path.clone(), ctx);
-        self.browser.selected = Some(new_path.clone());
-        self.prev_selected = Some(new_path);
+        self.browser.selected = Some(new_path);
     }
 }
 
@@ -830,20 +856,9 @@ impl eframe::App for PhotographApp {
         self.viewer.drain(ctx);
         self.poll_render_events();
 
-        // When a thumbnail is clicked (grid or filmstrip), load it into the
-        // single viewer and switch to the Detail view.
-        let sel = self.browser.selected.clone();
-        if sel != self.prev_selected {
-            if let Some(path) = sel.clone() {
-                self.viewer.set_image(path, ctx);
-                self.view_mode = ViewMode::Detail;
-            }
-            self.prev_selected = sel;
-        }
-
-        // Keyboard navigation while in Detail mode (skip while a text field
+        // Keyboard navigation while viewing a photo (skip while a text field
         // like the sidebar path bar has focus).
-        if self.view_mode == ViewMode::Detail && ctx.memory(|m| m.focused().is_none()) {
+        if self.view_mode != ViewMode::Library && ctx.memory(|m| m.focused().is_none()) {
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.view_mode = ViewMode::Library;
             }
@@ -867,6 +882,14 @@ impl eframe::App for PhotographApp {
                         self.show_render_window = true;
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if self.browser.selected.is_some() && self.view_mode != ViewMode::Edit {
+                            if ui.button("Edit").clicked() {
+                                if let Some(path) = self.browser.selected.clone() {
+                                    self.viewer.set_image(path, ctx);
+                                }
+                                self.view_mode = ViewMode::Edit;
+                            }
+                        }
                         if let Some(vendor) = self.preview_status_vendor {
                             let (rect, response) = ui
                                 .allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
@@ -902,8 +925,8 @@ impl eframe::App for PhotographApp {
                     });
             });
 
-        // Tools panel + filmstrip only apply while viewing/editing a photo
-        if self.view_mode == ViewMode::Detail {
+        // Tools panel only applies while actively editing a photo
+        if self.view_mode == ViewMode::Edit {
             egui::Panel::right("tools")
                 .resizable(false)
                 .exact_size(TOOLS_WIDTH)
@@ -918,7 +941,11 @@ impl eframe::App for PhotographApp {
                             self.viewer.show_controls(ui);
                         });
                 });
+        }
 
+        // Filmstrip shows the working selection, when there is more than one
+        // photo in it, while previewing or editing a photo.
+        if self.view_mode != ViewMode::Library && self.browser.selection.len() > 1 {
             egui::Panel::bottom("filmstrip")
                 .resizable(false)
                 .exact_size(FILMSTRIP_HEIGHT)
@@ -930,42 +957,31 @@ impl eframe::App for PhotographApp {
                     let active_path = self.viewer.path().map(|p| p.as_path());
                     if let Some(clicked) = self.browser.show_filmstrip(ui, active_path) {
                         self.viewer.set_image(clicked.clone(), ctx);
-                        self.browser.selected = Some(clicked.clone());
-                        self.prev_selected = Some(clicked);
+                        self.browser.selected = Some(clicked);
                     }
                 });
         }
 
-        // Central panel — Library grid or Detail image view
+        // Central panel — Library grid, fullscreen preview, or Edit view
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(ui.style()).inner_margin(egui::Margin::same(12)))
             .show(ui, |ui| match self.view_mode {
                 ViewMode::Library => {
-                    self.browser.show_contents(ui, ctx);
+                    if let Some(open_path) = self.browser.show_contents(ui, ctx) {
+                        self.viewer.set_image(open_path.clone(), ctx);
+                        self.browser.selected = Some(open_path);
+                        self.view_mode = ViewMode::Fullscreen;
+                    }
                 }
-                ViewMode::Detail => {
-                    ui.horizontal(|ui| {
-                        if ui.button("\u{2039} Back to Library").clicked() {
-                            self.view_mode = ViewMode::Library;
-                        }
-                        ui.separator();
-                        ui.label(self.viewer.filename());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if let Some(path) = self.viewer.path().cloned() {
-                                let marked = self.browser.is_marked(&path);
-                                let star = if marked {
-                                    "\u{2605} Marked"
-                                } else {
-                                    "\u{2606} Mark"
-                                };
-                                if ui.selectable_label(marked, star).clicked() {
-                                    self.browser.toggle_mark(path);
-                                }
-                            }
-                        });
-                    });
+                ViewMode::Fullscreen => {
+                    self.show_photo_header(ui);
                     ui.separator();
-                    self.viewer.show_image(ui);
+                    self.viewer.show_image(ui, false);
+                }
+                ViewMode::Edit => {
+                    self.show_photo_header(ui);
+                    ui.separator();
+                    self.viewer.show_image(ui, true);
                 }
             });
 
@@ -1069,7 +1085,7 @@ impl eframe::App for PhotographApp {
                     let render_count = self.render_target_count();
                     let label = if self.render_in_progress {
                         "Rendering...".to_string()
-                    } else if self.browser.marked_count() > 0 {
+                    } else if self.browser.selection_count() > 0 {
                         format!("Render {} Marked Image(s)", render_count)
                     } else {
                         format!("Render {} Image(s)", render_count)
@@ -1136,15 +1152,22 @@ impl eframe::App for PhotographApp {
                     }
                     ui.label(match self.view_mode {
                         ViewMode::Library => "Mode: Library".to_string(),
-                        ViewMode::Detail => format!(
-                            "Mode: Detail ({})",
+                        ViewMode::Fullscreen => format!(
+                            "Mode: Fullscreen ({})",
+                            self.viewer
+                                .path()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_default()
+                        ),
+                        ViewMode::Edit => format!(
+                            "Mode: Edit ({})",
                             self.viewer
                                 .path()
                                 .map(|p| p.display().to_string())
                                 .unwrap_or_default()
                         ),
                     });
-                    ui.label(format!("Marked: {}", self.browser.marked_count()));
+                    ui.label(format!("Selected: {}", self.browser.selection_count()));
                 });
         }
     }
