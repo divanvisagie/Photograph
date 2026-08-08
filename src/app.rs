@@ -23,7 +23,7 @@ use crate::{
 };
 
 const SIDEBAR_WIDTH: f32 = 220.0;
-const TOOLS_WIDTH: f32 = 320.0;
+const TOOLS_WIDTH: f32 = 340.0;
 const FILMSTRIP_HEIGHT: f32 = 100.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -149,93 +149,135 @@ pub struct PhotographApp {
     config: AppConfig,
 }
 
-fn configure_visuals(ctx: &egui::Context) {
-    let mut visuals = egui::Visuals::dark();
+/// Ubuntu/Yaru-flavoured surface colors, distinct per theme; the accent and
+/// semantic colors are shared between them.
+struct SurfacePalette {
+    window_bg: egui::Color32,
+    extreme_bg: egui::Color32,
+    faint_bg: egui::Color32,
+    button_normal: egui::Color32,
+    button_hover: egui::Color32,
+    button_active: egui::Color32,
+    button_disabled: egui::Color32,
+    primary_text: egui::Color32,
+    disabled_text: egui::Color32,
+    border: egui::Color32,
+}
 
-    // Sector F Labs style guide — dark theme (photo-editing variant)
-    // Panels/chrome use surface colors; canvas stays neutral grey for photo work
-    let window_bg = egui::Color32::from_rgb(0x16, 0x16, 0x16);     // codeBg — neutral grey canvas
-    let extreme_bg = egui::Color32::from_rgb(0x0B, 0x0B, 0x0B);    // bg — deepest
-    let faint_bg = egui::Color32::from_rgb(0x11, 0x11, 0x11);      // inputBg — panel/sidebar bg
+fn surface_palette(theme: egui::Theme) -> SurfacePalette {
+    match theme {
+        egui::Theme::Dark => SurfacePalette {
+            window_bg: egui::Color32::from_rgb(0x30, 0x30, 0x30),
+            extreme_bg: egui::Color32::from_rgb(0x24, 0x24, 0x24),
+            faint_bg: egui::Color32::from_rgb(0x3A, 0x3A, 0x3A),
+            button_normal: egui::Color32::from_rgb(0x3D, 0x3D, 0x3D),
+            button_hover: egui::Color32::from_rgb(0x47, 0x47, 0x47),
+            button_active: egui::Color32::from_rgb(0x2A, 0x2A, 0x2A),
+            button_disabled: egui::Color32::from_rgb(0x30, 0x30, 0x30),
+            primary_text: egui::Color32::from_rgb(0xEE, 0xEE, 0xEE),
+            disabled_text: egui::Color32::from_rgb(0x94, 0x94, 0x94),
+            border: egui::Color32::from_rgb(0x47, 0x47, 0x47),
+        },
+        egui::Theme::Light => SurfacePalette {
+            window_bg: egui::Color32::from_rgb(0xF6, 0xF5, 0xF4),
+            extreme_bg: egui::Color32::from_rgb(0xFF, 0xFF, 0xFF),
+            faint_bg: egui::Color32::from_rgb(0xE8, 0xE7, 0xE6),
+            button_normal: egui::Color32::from_rgb(0xFF, 0xFF, 0xFF),
+            button_hover: egui::Color32::from_rgb(0xEC, 0xEC, 0xEA),
+            button_active: egui::Color32::from_rgb(0xDE, 0xDC, 0xDA),
+            button_disabled: egui::Color32::from_rgb(0xF0, 0xEF, 0xED),
+            primary_text: egui::Color32::from_rgb(0x26, 0x23, 0x2A),
+            disabled_text: egui::Color32::from_rgb(0x8B, 0x8A, 0x8D),
+            border: egui::Color32::from_rgb(0xD5, 0xD3, 0xD1),
+        },
+    }
+}
 
-    // Widget backgrounds — built from surface palette
-    let button_normal = egui::Color32::from_rgb(0x1A, 0x1A, 0x1A); // raised above inputBg
-    let button_hover = egui::Color32::from_rgb(0x22, 0x22, 0x22);  // lighter on hover
-    let button_active = egui::Color32::from_rgb(0x11, 0x11, 0x11); // pressed — inputBg
-    let button_disabled = egui::Color32::from_rgb(0x16, 0x16, 0x16); // codeBg
+/// Builds the `Visuals` for one theme in the Yaru (stock Ubuntu GTK theme) style.
+fn photograph_visuals(theme: egui::Theme) -> egui::Visuals {
+    let mut visuals = theme.default_visuals();
+    let p = surface_palette(theme);
 
-    // Text colors
-    let primary_text = egui::Color32::from_rgb(0xD8, 0xD8, 0xD8);  // text
-    let disabled_text = egui::Color32::from_rgb(0xA8, 0xA8, 0xA8);  // muted
+    // Ubuntu orange — shared accent across both themes.
+    let accent = egui::Color32::from_rgb(0xE9, 0x54, 0x20);
+    let focus_ring = egui::Color32::from_rgba_unmultiplied(0xE9, 0x54, 0x20, 0xB3);
+    let error = egui::Color32::from_rgb(0xC0, 0x1C, 0x28);
+    let warn = egui::Color32::from_rgb(0xE6, 0x6A, 0x00);
 
-    // Accent & semantic
-    let accent = egui::Color32::from_rgb(0xE0, 0x5A, 0x00);         // burnt orange
-    let border = egui::Color32::from_rgb(0x33, 0x33, 0x33);         // border
-    let focus_ring = egui::Color32::from_rgba_unmultiplied(0xE0, 0x5A, 0x00, 0xB3);
-
-    let rounding = egui::CornerRadius::same(0);
+    // GTK/Adwaita-style rounding: 6px on widgets, 8px on windows/menus.
+    let rounding = egui::CornerRadius::same(6);
+    visuals.window_corner_radius = egui::CornerRadius::same(8);
+    visuals.menu_corner_radius = egui::CornerRadius::same(8);
 
     // Panel & window fills
-    visuals.window_fill = window_bg;
-    visuals.panel_fill = window_bg;
-    visuals.extreme_bg_color = extreme_bg;
-    visuals.faint_bg_color = faint_bg;
+    visuals.window_fill = p.window_bg;
+    visuals.panel_fill = p.window_bg;
+    visuals.extreme_bg_color = p.extreme_bg;
+    visuals.faint_bg_color = p.faint_bg;
 
     // Text
-    visuals.override_text_color = Some(primary_text);
+    visuals.override_text_color = Some(p.primary_text);
 
     // Selection
     visuals.selection.bg_fill = accent;
-    visuals.selection.stroke = egui::Stroke::new(1.0, primary_text);
+    visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
 
     // Hyperlinks & semantic colors
     visuals.hyperlink_color = accent;
-    visuals.error_fg_color = egui::Color32::from_rgb(0xCC, 0x22, 0x00);
-    visuals.warn_fg_color = egui::Color32::from_rgb(0xE0, 0x5A, 0x00);
+    visuals.error_fg_color = error;
+    visuals.warn_fg_color = warn;
 
     // Window stroke — very subtle
-    visuals.window_stroke = egui::Stroke::new(1.0, border);
+    visuals.window_stroke = egui::Stroke::new(1.0, p.border);
 
     // Noninteractive (labels, separators, disabled)
-    visuals.widgets.noninteractive.bg_fill = button_disabled;
-    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, border);
-    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, disabled_text);
+    visuals.widgets.noninteractive.bg_fill = p.button_disabled;
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, p.border);
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, p.disabled_text);
     visuals.widgets.noninteractive.corner_radius = rounding;
 
     // Widget styles — inactive (enabled but not hovered)
-    visuals.widgets.inactive.bg_fill = button_normal;
-    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, border);
-    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, primary_text);
+    visuals.widgets.inactive.bg_fill = p.button_normal;
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, p.border);
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, p.primary_text);
     visuals.widgets.inactive.corner_radius = rounding;
 
     // Widget styles — hovered
-    visuals.widgets.hovered.bg_fill = button_hover;
-    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, border);
+    visuals.widgets.hovered.bg_fill = p.button_hover;
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, p.border);
     visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.5, focus_ring);
     visuals.widgets.hovered.corner_radius = rounding;
 
     // Widget styles — active (pressed)
-    visuals.widgets.active.bg_fill = button_active;
-    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, border);
-    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.5, primary_text);
+    visuals.widgets.active.bg_fill = p.button_active;
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, accent);
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.5, p.primary_text);
     visuals.widgets.active.corner_radius = rounding;
 
     // Widget styles — open (e.g. combo box expanded)
-    visuals.widgets.open.bg_fill = button_hover;
-    visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, border);
-    visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, primary_text);
+    visuals.widgets.open.bg_fill = p.button_hover;
+    visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, p.border);
+    visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, p.primary_text);
     visuals.widgets.open.corner_radius = rounding;
 
-    ctx.set_visuals(visuals);
+    visuals
 }
 
-fn startup_window_theme_command() -> egui::ViewportCommand {
-    egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark)
-}
+/// Wires up dark and light `Visuals`, GTK-style spacing, and a theme
+/// preference that follows the OS light/dark setting (egui's default).
+fn configure_visuals(ctx: &egui::Context) {
+    ctx.set_visuals_of(egui::Theme::Dark, photograph_visuals(egui::Theme::Dark));
+    ctx.set_visuals_of(egui::Theme::Light, photograph_visuals(egui::Theme::Light));
+    ctx.set_theme(egui::ThemePreference::System);
 
-fn configure_startup_window_theme(ctx: &egui::Context) {
-    // Force dark window decorations from first frame so titlebar/chrome matches app visuals.
-    ctx.send_viewport_cmd(startup_window_theme_command());
+    ctx.all_styles_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.button_padding = egui::vec2(10.0, 5.0);
+        style.spacing.window_margin = egui::Margin::same(12);
+        style.spacing.menu_margin = egui::Margin::same(8);
+        style.spacing.indent = 20.0;
+        style.spacing.interact_size.y = 22.0;
+    });
 }
 
 fn configure_fonts(ctx: &egui::Context) {
@@ -275,7 +317,6 @@ impl PhotographApp {
         config: AppConfig,
         preview_backend: PreviewBackend,
     ) -> Self {
-        configure_startup_window_theme(&cc.egui_ctx);
         configure_fonts(&cc.egui_ctx);
         configure_visuals(&cc.egui_ctx);
         let browser = Browser::new(config.browse_path.clone());
@@ -691,7 +732,7 @@ mod tests {
 
     use super::{
         RenderFormat, RenderSpeedProfile, build_output_path, render_profile_defaults,
-        resized_dimensions, startup_window_theme_command,
+        resized_dimensions,
     };
 
     fn unique_test_dir(name: &str) -> std::path::PathBuf {
@@ -770,14 +811,6 @@ mod tests {
     fn render_profile_speed_prioritizes_throughput() {
         assert_eq!(render_profile_defaults(RenderSpeedProfile::Speed), (82, 1));
     }
-
-    #[test]
-    fn startup_window_theme_forces_dark_decorations() {
-        assert_eq!(
-            startup_window_theme_command(),
-            egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark)
-        );
-    }
 }
 
 impl eframe::App for PhotographApp {
@@ -823,35 +856,44 @@ impl eframe::App for PhotographApp {
         }
 
         // Top menu bar
-        egui::Panel::top("main_menu").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("Render").clicked() {
-                    self.show_render_window = true;
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(vendor) = self.preview_status_vendor {
-                        let (rect, response) =
-                            ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                        ui.painter()
-                            .circle_filled(rect.center(), 5.0, vendor.badge_fill());
-                        response.on_hover_text(format!("{} GPU", vendor.badge_text()));
+        egui::Panel::top("main_menu")
+            .frame(
+                egui::Frame::side_top_panel(ui.style())
+                    .inner_margin(egui::Margin::symmetric(12, 8)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Render").clicked() {
+                        self.show_render_window = true;
                     }
-                    let response = ui.label(
-                        egui::RichText::new(&self.preview_status_label)
-                            .weak()
-                            .monospace(),
-                    );
-                    if let Some(details) = &self.preview_status_details {
-                        response.on_hover_text(details);
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(vendor) = self.preview_status_vendor {
+                            let (rect, response) = ui
+                                .allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                            ui.painter()
+                                .circle_filled(rect.center(), 5.0, vendor.badge_fill());
+                            response.on_hover_text(format!("{} GPU", vendor.badge_text()));
+                        }
+                        let response = ui.label(
+                            egui::RichText::new(&self.preview_status_label)
+                                .weak()
+                                .monospace(),
+                        );
+                        if let Some(details) = &self.preview_status_details {
+                            response.on_hover_text(details);
+                        }
+                    });
                 });
             });
-        });
         // Left sidebar — locations + current folder's subfolders
         egui::Panel::left("sidebar")
             .resizable(true)
             .default_size(SIDEBAR_WIDTH)
             .min_size(160.0)
+            .frame(
+                egui::Frame::side_top_panel(ui.style())
+                    .inner_margin(egui::Margin::symmetric(10, 10)),
+            )
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -865,6 +907,10 @@ impl eframe::App for PhotographApp {
             egui::Panel::right("tools")
                 .resizable(false)
                 .exact_size(TOOLS_WIDTH)
+                .frame(
+                    egui::Frame::side_top_panel(ui.style())
+                        .inner_margin(egui::Margin::symmetric(10, 10)),
+                )
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -876,6 +922,10 @@ impl eframe::App for PhotographApp {
             egui::Panel::bottom("filmstrip")
                 .resizable(false)
                 .exact_size(FILMSTRIP_HEIGHT)
+                .frame(
+                    egui::Frame::side_top_panel(ui.style())
+                        .inner_margin(egui::Margin::symmetric(10, 8)),
+                )
                 .show(ui, |ui| {
                     let active_path = self.viewer.path().map(|p| p.as_path());
                     if let Some(clicked) = self.browser.show_filmstrip(ui, active_path) {
@@ -887,31 +937,37 @@ impl eframe::App for PhotographApp {
         }
 
         // Central panel — Library grid or Detail image view
-        egui::CentralPanel::default().show(ui, |ui| match self.view_mode {
-            ViewMode::Library => {
-                self.browser.show_contents(ui, ctx);
-            }
-            ViewMode::Detail => {
-                ui.horizontal(|ui| {
-                    if ui.button("\u{2039} Back to Library").clicked() {
-                        self.view_mode = ViewMode::Library;
-                    }
-                    ui.separator();
-                    ui.label(self.viewer.filename());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if let Some(path) = self.viewer.path().cloned() {
-                            let marked = self.browser.is_marked(&path);
-                            let star = if marked { "\u{2605} Marked" } else { "\u{2606} Mark" };
-                            if ui.selectable_label(marked, star).clicked() {
-                                self.browser.toggle_mark(path);
-                            }
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(ui.style()).inner_margin(egui::Margin::same(12)))
+            .show(ui, |ui| match self.view_mode {
+                ViewMode::Library => {
+                    self.browser.show_contents(ui, ctx);
+                }
+                ViewMode::Detail => {
+                    ui.horizontal(|ui| {
+                        if ui.button("\u{2039} Back to Library").clicked() {
+                            self.view_mode = ViewMode::Library;
                         }
+                        ui.separator();
+                        ui.label(self.viewer.filename());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if let Some(path) = self.viewer.path().cloned() {
+                                let marked = self.browser.is_marked(&path);
+                                let star = if marked {
+                                    "\u{2605} Marked"
+                                } else {
+                                    "\u{2606} Mark"
+                                };
+                                if ui.selectable_label(marked, star).clicked() {
+                                    self.browser.toggle_mark(path);
+                                }
+                            }
+                        });
                     });
-                });
-                ui.separator();
-                self.viewer.show_image(ui);
-            }
-        });
+                    ui.separator();
+                    self.viewer.show_image(ui);
+                }
+            });
 
         // Render window
         if self.show_render_window {
@@ -1082,7 +1138,10 @@ impl eframe::App for PhotographApp {
                         ViewMode::Library => "Mode: Library".to_string(),
                         ViewMode::Detail => format!(
                             "Mode: Detail ({})",
-                            self.viewer.path().map(|p| p.display().to_string()).unwrap_or_default()
+                            self.viewer
+                                .path()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_default()
                         ),
                     });
                     ui.label(format!("Marked: {}", self.browser.marked_count()));

@@ -1078,7 +1078,7 @@ impl Viewer {
         ui.add_space(4.0);
 
         // Aspect ratio selector
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Aspect");
             for aspect in CropAspect::ALL {
                 if ui
@@ -1526,7 +1526,7 @@ fn show_transform_section(
     ui.add_space(4.0);
 
     // Rotate
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Rotate");
         if ui.button("◀ 90°").clicked() {
             state.rotate = (state.rotate - 90).rem_euclid(360);
