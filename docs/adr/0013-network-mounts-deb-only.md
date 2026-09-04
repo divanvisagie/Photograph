@@ -4,7 +4,7 @@ Date: 2026-08-02
 
 ## Status
 
-Accepted
+Superseded by [ADR-0015](0015-drop-specialized-network-mounts.md)
 
 ## Context
 

@@ -46,8 +46,7 @@ make install
 ```
 
 Builds and installs the `.deb` locally via the `Makefile` (see [Packaging](#packaging)). This is
-the primary install path — it's the only one that includes network-drive browsing
-([ADR-0013](docs/adr/0013-network-mounts-deb-only.md)).
+the primary install path.
 
 ### Linux (Snap)
 
@@ -148,10 +147,6 @@ make snap-install   # build and install the snap (--dangerous, local testing)
 make release        # build the .deb and publish it as a GitHub release (requires gh CLI, logged in)
 ```
 
-The Snap build disables the `network-mounts` Cargo feature (see
-[ADR-0013](docs/adr/0013-network-mounts-deb-only.md)): the browser sidebar's "NETWORK" section
-(active SMB/NFS/GVfs shares) only appears in the `.deb` build. Use the `.deb` if you need it.
-
 Linux packaging assets live under `packaging/linux/`.
 
 ## Performance Probe
@@ -173,7 +168,6 @@ Pipeline and architecture decisions are documented in `/docs`:
 - [Pipeline Architecture](docs/pipeline-architecture.md)
 - [Architecture Decision Records](docs/adr/README.md)
 - [RAW Load Latency Notes](docs/raw-load-latency.md)
-- [Snap Packaging: Network Mount Access](docs/snap-network-access.md)
 
 These docs include Mermaid diagrams (flowcharts and sequence diagrams) for preview processing, export processing, and backend policy enforcement.
 

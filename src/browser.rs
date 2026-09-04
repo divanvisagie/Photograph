@@ -37,7 +37,6 @@ pub struct Browser {
     pub selection: HashSet<PathBuf>,
     path_edit: String,
     locations: Vec<(PathBuf, String)>,
-    network_locations: Vec<(PathBuf, String)>,
     scan_error: Option<String>,
 }
 
@@ -64,11 +63,9 @@ impl Browser {
             select_anchor: None,
             selection: HashSet::new(),
             locations: Vec::new(),
-            network_locations: Vec::new(),
             scan_error: None,
         };
         b.scan_locations();
-        b.scan_network_locations();
         b.scan();
         b
     }
@@ -143,80 +140,6 @@ impl Browser {
                 }
             }
         }
-    }
-
-    /// Finds currently-mounted network shares: active GVfs mounts (the way
-    /// GNOME/Nautilus surfaces `smb://`/`sftp://` connections) plus classic
-    /// NFS/CIFS/sshfs entries from `/proc/mounts`.
-    #[cfg(feature = "network-mounts")]
-    fn scan_network_locations(&mut self) {
-        self.network_locations.clear();
-        let mut seen = HashSet::new();
-
-        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            let gvfs_dir = PathBuf::from(runtime_dir).join("gvfs");
-            if let Ok(entries) = std::fs::read_dir(&gvfs_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() && seen.insert(path.clone()) {
-                        let raw = entry.file_name().to_string_lossy().into_owned();
-                        self.network_locations.push((path, friendly_gvfs_label(&raw)));
-                    }
-                }
-            }
-        }
-
-        const NETWORK_FS_TYPES: &[&str] = &[
-            "nfs",
-            "nfs4",
-            "cifs",
-            "smb3",
-            "smbfs",
-            "fuse.sshfs",
-            "fuse.rclone",
-            "davfs",
-            "fuse.davfs2",
-            "afs",
-            "9p",
-            "ftpfs",
-            "fuse.curlftpfs",
-        ];
-        if let Ok(contents) = std::fs::read_to_string("/proc/mounts") {
-            for line in contents.lines() {
-                let mut fields = line.split_whitespace();
-                let Some(_device) = fields.next() else {
-                    continue;
-                };
-                let Some(mount_point) = fields.next() else {
-                    continue;
-                };
-                let Some(fs_type) = fields.next() else {
-                    continue;
-                };
-                if !NETWORK_FS_TYPES.contains(&fs_type) {
-                    continue;
-                }
-                let path = PathBuf::from(unescape_mount_field(mount_point));
-                if !path.is_dir() || !seen.insert(path.clone()) {
-                    continue;
-                }
-                let label = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| mount_point.to_string());
-                self.network_locations.push((path, label));
-            }
-        }
-
-        self.network_locations.sort_by(|a, b| a.1.cmp(&b.1));
-    }
-
-    /// No-op when the `network-mounts` feature is disabled (the Snap build,
-    /// per docs/adr/0013-network-mounts-deb-only.md): `network_locations`
-    /// stays empty, so the sidebar's "NETWORK" section never renders.
-    #[cfg(not(feature = "network-mounts"))]
-    fn scan_network_locations(&mut self) {
-        self.network_locations.clear();
     }
 
     fn navigate(&mut self, dir: PathBuf) {
@@ -306,7 +229,6 @@ impl Browser {
             self.select_anchor = None;
             self.selection.clear();
             self.scan_locations();
-            self.scan_network_locations();
             self.scan();
         }
 
@@ -325,20 +247,6 @@ impl Browser {
                 let is_current = *path == self.current_dir;
                 if ui
                     .selectable_label(is_current, format!("\u{1F5C2} {}", label))
-                    .clicked()
-                {
-                    nav_to = Some(path.clone());
-                }
-            }
-            ui.add_space(8.0);
-        }
-
-        if !self.network_locations.is_empty() {
-            ui.label(egui::RichText::new("NETWORK").weak().small());
-            for (path, label) in &self.network_locations {
-                let is_current = *path == self.current_dir;
-                if ui
-                    .selectable_label(is_current, format!("\u{1F310} {}", label))
                     .clicked()
                 {
                     nav_to = Some(path.clone());
@@ -657,89 +565,4 @@ fn generate_thumb(path: &PathBuf, cache_dir: &PathBuf) -> Option<(Vec<u8>, usize
 
 fn is_image(path: &std::path::Path) -> bool {
     crate::thumbnail::is_supported_image(path)
-}
-
-/// Turns a raw GVfs mount directory name (e.g.
-/// `smb-share:server=nas,share=photos`) into a readable label like
-/// `photos on nas`. Falls back to the raw name for unrecognized schemes.
-#[cfg(feature = "network-mounts")]
-fn friendly_gvfs_label(raw: &str) -> String {
-    let Some((scheme, rest)) = raw.split_once(':') else {
-        return raw.to_string();
-    };
-
-    let mut server = None;
-    let mut share = None;
-    for kv in rest.split(',') {
-        if let Some((key, value)) = kv.split_once('=') {
-            match key {
-                "server" | "host" => server = server.or(Some(value)),
-                "share" => share = Some(value),
-                _ => {}
-            }
-        }
-    }
-
-    match (share, server) {
-        (Some(share), Some(server)) => format!("{share} on {server}"),
-        (None, Some(server)) => format!("{server} ({scheme})"),
-        _ => raw.to_string(),
-    }
-}
-
-/// Decodes the octal escapes (`\040` for space, etc.) `/proc/mounts` uses
-/// for whitespace and backslashes in mount-point paths.
-#[cfg(feature = "network-mounts")]
-fn unescape_mount_field(field: &str) -> String {
-    let bytes = field.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 3 < bytes.len() {
-            if let Ok(code) = u8::from_str_radix(&field[i + 1..i + 4], 8) {
-                out.push(code);
-                i += 4;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-#[cfg(all(test, feature = "network-mounts"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn friendly_gvfs_label_formats_smb_share() {
-        assert_eq!(
-            friendly_gvfs_label("smb-share:server=nas,share=photos"),
-            "photos on nas"
-        );
-    }
-
-    #[test]
-    fn friendly_gvfs_label_formats_sftp_with_host_only() {
-        assert_eq!(
-            friendly_gvfs_label("sftp:host=example.com"),
-            "example.com (sftp)"
-        );
-    }
-
-    #[test]
-    fn friendly_gvfs_label_falls_back_for_unknown_scheme() {
-        assert_eq!(friendly_gvfs_label("unknown-thing"), "unknown-thing");
-    }
-
-    #[test]
-    fn unescape_mount_field_decodes_octal_space() {
-        assert_eq!(unescape_mount_field(r"/mnt/My\040Share"), "/mnt/My Share");
-    }
-
-    #[test]
-    fn unescape_mount_field_passes_through_plain_path() {
-        assert_eq!(unescape_mount_field("/mnt/nas"), "/mnt/nas");
-    }
 }
