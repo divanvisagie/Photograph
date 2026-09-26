@@ -55,6 +55,7 @@ mechanics of adding one.
 | [0015](0015-drop-specialized-network-mounts.md) | Drop specialized network-mount logic in favor of local mounts | Superseded by [ADR-0017](0017-discover-mounts-for-sidebar.md) |
 | [0016](0016-drop-snap-packaging.md) | Drop Snap packaging; ship Linux .deb only | Accepted |
 | [0017](0017-discover-mounts-for-sidebar.md) | Discover storage and network mounts for the sidebar | Accepted |
+| [0018](0018-spot-removal-in-source-coordinates.md) | Spot removal (clone and heal) as the first pipeline stage, in source-image coordinates | Accepted |
 
 ## Decision Relationship
 
