@@ -9,7 +9,7 @@ use std::{
 
 use image::{DynamicImage, RgbaImage};
 
-use crate::state::{EditState, GradFilter, Rect, Spot};
+use crate::state::{EditState, GradFilter, Mask, Rect, Spot, Stroke};
 
 /// Downscale loaded images to this longest-edge size for the preview.
 const PREVIEW_MAX: u32 = 1920;
@@ -209,6 +209,14 @@ struct SpotDrag {
 
 /// Default radius for new spots, as a fraction of the image's shorter side.
 const DEFAULT_SPOT_SIZE: f32 = 0.02;
+/// Default mask brush radius and feather.
+const DEFAULT_BRUSH_SIZE: f32 = 0.05;
+const DEFAULT_BRUSH_FEATHER: f32 = 0.5;
+/// A stroke records a new point once the brush has moved this fraction of
+/// its radius, keeping sidecars small (ADR-0019).
+const STROKE_POINT_SPACING: f32 = 0.25;
+/// Longest side of the editor's mask overlay texture.
+const MASK_OVERLAY_MAX: u32 = 512;
 
 /// Image viewer/editor window state, including async preview processing.
 pub struct Viewer {
@@ -250,6 +258,18 @@ pub struct Viewer {
     spot_size: f32,
     selected_spot: Option<usize>,
     spot_drag: Option<SpotDrag>,
+    /// Mask painting tool active (ADR-0019): same view as the spot tool.
+    mask_mode: bool,
+    selected_mask: Option<usize>,
+    brush_size: f32,
+    brush_feather: f32,
+    brush_erase: bool,
+    show_mask_overlay: bool,
+    /// A stroke is being painted into the selected mask.
+    painting: bool,
+    /// The selected mask's coverage as a tinted texture, with the signature
+    /// of the mask it was drawn from.
+    mask_overlay: Option<(u64, egui::TextureHandle)>,
     zoom: f32,
     pan_offset: egui::Vec2,
     loading: bool,
@@ -299,6 +319,14 @@ impl Viewer {
             spot_size: DEFAULT_SPOT_SIZE,
             selected_spot: None,
             spot_drag: None,
+            mask_mode: false,
+            selected_mask: None,
+            brush_size: DEFAULT_BRUSH_SIZE,
+            brush_feather: DEFAULT_BRUSH_FEATHER,
+            brush_erase: false,
+            show_mask_overlay: true,
+            painting: false,
+            mask_overlay: None,
             zoom: 1.0,
             pan_offset: egui::Vec2::ZERO,
             loading: false,
@@ -353,16 +381,16 @@ impl Viewer {
 
     /// The edit state the preview is rendered with. In crop mode the applied
     /// crop is left out, so the full image is on screen and the crop overlay
-    /// (in full-image coordinates) lines up with it. In spot mode straighten
-    /// and keystone are left out: what remains (rotate, flip, crop) maps
-    /// exactly back to source-image coordinates, where spots live (ADR-0018;
-    /// see `SpotProjection`).
+    /// (in full-image coordinates) lines up with it. In spot and mask mode
+    /// straighten and keystone are left out: what remains (rotate, flip,
+    /// crop) maps exactly back to source-image coordinates, where spots and
+    /// strokes live (ADR-0018, ADR-0019; see `SourceProjection`).
     fn render_state(&self) -> EditState {
         let mut state = self.edit_state.clone();
         if self.crop_mode {
             state.crop = None;
         }
-        if self.spot_mode {
+        if self.spot_mode || self.mask_mode {
             state.straighten = 0.0;
             state.keystone = Default::default();
         }
@@ -385,6 +413,7 @@ impl Viewer {
         }
         if on {
             self.exit_crop_mode();
+            self.set_mask_mode(false);
         }
         self.spot_mode = on;
         self.selected_spot = None;
@@ -393,9 +422,58 @@ impl Viewer {
         self.last_slider_change = None;
     }
 
-    /// Marks spot edits for re-render: `dragging` coalesces into interactive
+    /// Enters or leaves the mask tool; like the spot tool it's exclusive with
+    /// the other tools and re-renders without straighten and keystone.
+    fn set_mask_mode(&mut self, on: bool) {
+        if self.mask_mode == on {
+            return;
+        }
+        if on {
+            self.exit_crop_mode();
+            self.set_spot_mode(false);
+            if self.selected_mask.is_none() && !self.edit_state.masks.is_empty() {
+                self.selected_mask = Some(0);
+            }
+        }
+        self.mask_mode = on;
+        self.painting = false;
+        self.needs_process = true;
+        self.last_slider_change = None;
+    }
+
+    /// Adds a new, empty mask named "Mask N" and selects it.
+    fn add_mask(&mut self) -> usize {
+        let n = (1..)
+            .find(|n| !self.edit_state.masks.iter().any(|m| m.name == format!("Mask {n}")))
+            .unwrap_or(1);
+        self.edit_state.masks.push(Mask {
+            name: format!("Mask {n}"),
+            strokes: Vec::new(),
+            adjust: Default::default(),
+        });
+        let index = self.edit_state.masks.len() - 1;
+        self.selected_mask = Some(index);
+        index
+    }
+
+    fn delete_selected_mask(&mut self) {
+        if let Some(i) = self.selected_mask.take() {
+            if i < self.edit_state.masks.len() {
+                self.edit_state.masks.remove(i);
+                self.painting = false;
+                self.selected_mask = if self.edit_state.masks.is_empty() {
+                    None
+                } else {
+                    Some(i.min(self.edit_state.masks.len() - 1))
+                };
+                self.edits_changed(false);
+            }
+        }
+    }
+
+    /// Marks spot or mask edits for re-render: `dragging` coalesces into interactive
     /// passes like a slider drag, otherwise a final pass runs right away.
-    fn spots_changed(&mut self, dragging: bool) {
+    fn edits_changed(&mut self, dragging: bool) {
         self.needs_process = true;
         self.last_slider_change = dragging.then(Instant::now);
     }
@@ -423,7 +501,7 @@ impl Viewer {
             if i < self.edit_state.spots.len() {
                 self.edit_state.spots.remove(i);
                 self.spot_drag = None;
-                self.spots_changed(false);
+                self.edits_changed(false);
             }
         }
     }
@@ -476,6 +554,10 @@ impl Viewer {
         self.spot_mode = false;
         self.selected_spot = None;
         self.spot_drag = None;
+        self.mask_mode = false;
+        self.selected_mask = None;
+        self.painting = false;
+        self.mask_overlay = None;
         self.zoom = 1.0;
         self.pan_offset = egui::Vec2::ZERO;
         self.preview_max = PREVIEW_MAX;
@@ -783,6 +865,7 @@ impl Viewer {
         if !editable {
             self.exit_crop_mode();
             self.set_spot_mode(false);
+            self.set_mask_mode(false);
         }
 
         // If edits arrive while processing is active, bump the requested generation
@@ -876,6 +959,7 @@ impl Viewer {
                 }
                 if ui.selectable_label(self.crop_mode, "Crop").clicked() {
                     self.set_spot_mode(false);
+                    self.set_mask_mode(false);
                     self.set_crop_mode(!self.crop_mode);
                     if self.crop_mode {
                         // Enter crop mode: start with full image or existing applied crop
@@ -899,6 +983,13 @@ impl Viewer {
                 {
                     self.set_spot_mode(!self.spot_mode);
                 }
+                if ui
+                    .selectable_label(self.mask_mode, "Mask")
+                    .on_hover_text("Paint masks to adjust parts of the photo")
+                    .clicked()
+                {
+                    self.set_mask_mode(!self.mask_mode);
+                }
 
                 if ui
                     .add_enabled(self.has_edits(), egui::Button::new("Save"))
@@ -913,6 +1004,10 @@ impl Viewer {
                     });
                 }
             });
+        }
+
+        if editable && self.mask_mode {
+            self.show_mask_window(ui.ctx());
         }
 
         // Spot mode toolbar: size, delete, clear
@@ -935,7 +1030,7 @@ impl Viewer {
                         spot.radius = size;
                         spot.target = crate::state::clamp_center(spot.target, size, aspect);
                         spot.source = crate::state::clamp_center(spot.source, size, aspect);
-                        self.spots_changed(true);
+                        self.edits_changed(true);
                     }
                 }
                 if ui
@@ -950,7 +1045,7 @@ impl Viewer {
                 {
                     self.edit_state.spots.clear();
                     self.selected_spot = None;
-                    self.spots_changed(false);
+                    self.edits_changed(false);
                 }
                 ui.weak("Click to add · drag circles to adjust · Delete removes");
             });
@@ -1063,10 +1158,12 @@ impl Viewer {
 
                     // Single interaction widget for zoom/pan — only the hovered
                     // viewer responds to scroll, so stacked windows don't conflict.
-                    // The spot tool supplies its own (it pans on empty-area drags).
-                    let spot_tool = editable && self.spot_mode;
-                    let resp = if spot_tool {
+                    // The spot and mask tools supply their own, and pan themselves.
+                    let source_tool = editable && (self.spot_mode || self.mask_mode);
+                    let resp = if editable && self.spot_mode {
                         self.handle_spot_interaction(ui, img_rect, viewport_rect)
+                    } else if editable && self.mask_mode {
+                        self.handle_mask_interaction(ui, img_rect, viewport_rect)
                     } else {
                         let sense = if self.zoom > 1.0 {
                             egui::Sense::click_and_drag()
@@ -1105,7 +1202,7 @@ impl Viewer {
                     }
 
                     // Drag-to-pan when zoomed in
-                    if self.zoom > 1.0 && !spot_tool {
+                    if self.zoom > 1.0 && !source_tool {
                         if resp.dragged() {
                             self.pan_offset += resp.drag_delta();
                         }
@@ -1212,8 +1309,8 @@ impl Viewer {
 
     /// Where spots appear on screen for the current preview (`img_rect` is the
     /// full, possibly zoomed image rect).
-    fn spot_projection(&self, img_rect: egui::Rect) -> SpotProjection {
-        SpotProjection {
+    fn source_projection(&self, img_rect: egui::Rect) -> SourceProjection {
+        SourceProjection {
             img_rect,
             source_aspect: self.spot_image_aspect(),
             rotate: self.edit_state.rotate,
@@ -1239,7 +1336,7 @@ impl Viewer {
             ui.id().with("spot_interact"),
             egui::Sense::click_and_drag(),
         );
-        let proj = self.spot_projection(img_rect);
+        let proj = self.source_projection(img_rect);
         let aspect = proj.source_aspect;
 
         if resp.drag_started() {
@@ -1282,12 +1379,12 @@ impl Viewer {
                         SpotHandle::Target => spot.target = moved,
                         SpotHandle::Source => spot.source = moved,
                     }
-                    self.spots_changed(true);
+                    self.edits_changed(true);
                 }
             }
         }
         if resp.drag_stopped() && self.spot_drag.take().is_some() {
-            self.spots_changed(false);
+            self.edits_changed(false);
         }
 
         if resp.clicked() {
@@ -1304,7 +1401,7 @@ impl Viewer {
                         }
                         self.edit_state.spots.push(spot);
                         self.selected_spot = Some(self.edit_state.spots.len() - 1);
-                        self.spots_changed(false);
+                        self.edits_changed(false);
                     }
                 }
             }
@@ -1339,6 +1436,196 @@ impl Viewer {
         let accent = ui.visuals().selection.bg_fill;
         draw_spot_overlay(&painter, accent, &proj, &self.edit_state.spots, self.selected_spot);
         resp
+    }
+
+    /// Mask tool interaction: primary-button drag (or click) paints — or
+    /// erases — a stroke into the selected mask, creating a mask if there is
+    /// none; middle- or right-button drag pans when zoomed. Draws the
+    /// selected mask's coverage overlay and the brush outline. Returns the
+    /// interaction response so the caller can apply scroll/pinch zoom.
+    fn handle_mask_interaction(
+        &mut self,
+        ui: &mut egui::Ui,
+        img_rect: egui::Rect,
+        viewport_rect: egui::Rect,
+    ) -> egui::Response {
+        let resp = ui.interact(
+            viewport_rect.intersect(img_rect),
+            ui.id().with("mask_interact"),
+            egui::Sense::click_and_drag(),
+        );
+        let proj = self.source_projection(img_rect);
+        let aspect = proj.source_aspect;
+
+        let panning = resp.dragged_by(egui::PointerButton::Middle)
+            || resp.dragged_by(egui::PointerButton::Secondary);
+        if panning && self.zoom > 1.0 {
+            self.pan_offset += resp.drag_delta();
+        }
+
+        let primary_press = resp.drag_started_by(egui::PointerButton::Primary)
+            || resp.clicked_by(egui::PointerButton::Primary);
+        if primary_press && !self.painting {
+            // Start where the button went down, not where the drag registered.
+            let start = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos());
+            if let Some(pos) = start {
+                let index = match self.selected_mask {
+                    Some(i) if i < self.edit_state.masks.len() => i,
+                    _ => self.add_mask(),
+                };
+                self.edit_state.masks[index].strokes.push(Stroke {
+                    points: vec![proj.to_source(pos)],
+                    radius: self.brush_size,
+                    feather: self.brush_feather,
+                    erase: self.brush_erase,
+                });
+                self.painting = true;
+                self.edits_changed(true);
+            }
+        }
+        if self.painting && resp.dragged_by(egui::PointerButton::Primary) {
+            if let (Some(pos), Some(stroke)) = (
+                resp.interact_pointer_pos(),
+                self.selected_mask
+                    .and_then(|i| self.edit_state.masks.get_mut(i))
+                    .and_then(|m| m.strokes.last_mut()),
+            ) {
+                let p = proj.to_source(pos);
+                let last = *stroke.points.last().unwrap_or(&p);
+                if source_distance(p, last, aspect) >= stroke.radius * STROKE_POINT_SPACING {
+                    stroke.points.push(p);
+                    self.edits_changed(true);
+                }
+            }
+        }
+        if self.painting
+            && (resp.drag_stopped() || resp.clicked() || !ui.input(|i| i.pointer.primary_down()))
+        {
+            self.painting = false;
+            self.edits_changed(false);
+        }
+
+        let painter = ui.painter().with_clip_rect(viewport_rect);
+        if self.show_mask_overlay {
+            if let Some(tex) = self.selected_mask_overlay(ui.ctx(), aspect) {
+                draw_source_texture(&painter, &proj, tex.id());
+            }
+        }
+
+        if resp.hovered() || self.painting {
+            ui.ctx().set_cursor_icon(if panning {
+                egui::CursorIcon::Grabbing
+            } else {
+                egui::CursorIcon::Crosshair
+            });
+            if let Some(pos) = resp.hover_pos() {
+                let r = proj.radius_px(self.brush_size);
+                let shadow = egui::Stroke::new(3.0, egui::Color32::from_black_alpha(110));
+                let color = if self.brush_erase {
+                    egui::Color32::from_rgb(255, 120, 120)
+                } else {
+                    egui::Color32::WHITE
+                };
+                painter.circle_stroke(pos, r, shadow);
+                painter.circle_stroke(pos, r, egui::Stroke::new(1.5, color));
+                let inner = r * (1.0 - self.brush_feather);
+                if inner > 2.0 && inner < r - 2.0 {
+                    painter.circle_stroke(pos, inner, egui::Stroke::new(1.0, color.gamma_multiply(0.5)));
+                }
+            }
+        }
+        resp
+    }
+
+    /// The selected mask's coverage as a translucent tint, cached until the
+    /// mask changes.
+    fn selected_mask_overlay(&mut self, ctx: &egui::Context, aspect: f32) -> Option<&egui::TextureHandle> {
+        let mask = self.selected_mask.and_then(|i| self.edit_state.masks.get(i))?;
+        let signature = {
+            let mut hasher = DefaultHasher::new();
+            for stroke in &mask.strokes {
+                (stroke.radius.to_bits(), stroke.feather.to_bits(), stroke.erase).hash(&mut hasher);
+                for p in &stroke.points {
+                    (p[0].to_bits(), p[1].to_bits()).hash(&mut hasher);
+                }
+            }
+            aspect.to_bits().hash(&mut hasher);
+            hasher.finish()
+        };
+        if self.mask_overlay.as_ref().map(|(sig, _)| *sig) != Some(signature) {
+            let (w, h) = crate::processing::masks::raster_size(aspect, MASK_OVERLAY_MAX);
+            let coverage = crate::processing::masks::rasterize(mask, w, h);
+            let pixels = coverage
+                .iter()
+                .map(|c| egui::Color32::from_rgba_unmultiplied(255, 70, 70, (c * 140.0) as u8))
+                .collect();
+            let image = egui::ColorImage::new([w as usize, h as usize], pixels);
+            let tex = ctx.load_texture(
+                format!("viewer_mask_overlay_{}", self.id),
+                image,
+                egui::TextureOptions::LINEAR,
+            );
+            self.mask_overlay = Some((signature, tex));
+        }
+        self.mask_overlay.as_ref().map(|(_, tex)| tex)
+    }
+
+    /// The Masks window shown while the mask tool is active: create, select,
+    /// rename and delete masks, plus the brush. The selected mask's
+    /// adjustments live in the normal adjustments panel (`show_mask_controls`).
+    fn show_mask_window(&mut self, ctx: &egui::Context) {
+        egui::Window::new("Masks")
+            .id(egui::Id::new(("mask_window", self.id)))
+            .default_width(230.0)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("+").on_hover_text("New mask").clicked() {
+                        self.add_mask();
+                    }
+                    if ui
+                        .add_enabled(self.selected_mask.is_some(), egui::Button::new("Delete"))
+                        .clicked()
+                    {
+                        self.delete_selected_mask();
+                    }
+                });
+                if self.edit_state.masks.is_empty() {
+                    ui.weak("No masks yet. Paint to create one.");
+                }
+                for i in 0..self.edit_state.masks.len() {
+                    let selected = self.selected_mask == Some(i);
+                    if ui.selectable_label(selected, &self.edit_state.masks[i].name).clicked() {
+                        self.selected_mask = Some(i);
+                    }
+                }
+                if let Some(i) = self.selected_mask.filter(|&i| i < self.edit_state.masks.len()) {
+                    ui.horizontal(|ui| {
+                        ui.label("Name");
+                        ui.text_edit_singleline(&mut self.edit_state.masks[i].name);
+                    });
+                }
+
+                ui.separator();
+                egui::Grid::new(("brush_grid", self.id)).num_columns(2).show(ui, |ui| {
+                    ui.label("Size");
+                    ui.add(
+                        egui::Slider::new(&mut self.brush_size, 0.002..=0.3)
+                            .logarithmic(true)
+                            .show_value(false),
+                    );
+                    ui.end_row();
+                    ui.label("Feather");
+                    ui.add(egui::Slider::new(&mut self.brush_feather, 0.0..=1.0).show_value(false));
+                    ui.end_row();
+                });
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.brush_erase, false, "Paint");
+                    ui.selectable_value(&mut self.brush_erase, true, "Erase");
+                    ui.checkbox(&mut self.show_mask_overlay, "Overlay");
+                });
+                ui.weak("Drag to paint · right-drag to pan");
+            });
     }
 
     /// Handle crop drag interaction on the pending crop and draw the overlay.
@@ -1504,6 +1791,15 @@ impl Viewer {
             .id_salt("controls_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                if self.mask_mode {
+                    self.show_mask_controls(ui);
+                    ui.separator();
+                    if let Some(ref meta) = self.metadata {
+                        show_exif(ui, meta);
+                    }
+                    return;
+                }
+
                 self.show_crop_section(ui);
 
                 ui.separator();
@@ -1532,6 +1828,44 @@ impl Viewer {
                     ui.label(egui::RichText::new("No EXIF data").weak());
                 }
             });
+    }
+
+    /// The adjustments panel in mask mode: the color sliders, applied to the
+    /// selected mask instead of the whole photo.
+    fn show_mask_controls(&mut self, ui: &mut egui::Ui) {
+        let Some(i) = self.selected_mask.filter(|&i| i < self.edit_state.masks.len()) else {
+            ui.label(egui::RichText::new("Masks").strong());
+            ui.weak("Paint on the photo, or press + in the Masks window, to create a mask.");
+            return;
+        };
+        let accent = ui.visuals().selection.bg_fill;
+        let name = self.edit_state.masks[i].name.clone();
+        ui.label(egui::RichText::new(format!("Editing mask: {name}")).strong().color(accent));
+        ui.weak("These adjustments apply inside the mask. Leave Mask mode to edit the whole photo.");
+        ui.add_space(4.0);
+        let adjust = &mut self.edit_state.masks[i].adjust;
+        show_basic_color_sliders(
+            ui,
+            BasicColor {
+                exposure: &mut adjust.exposure,
+                contrast: &mut adjust.contrast,
+                highlights: &mut adjust.highlights,
+                shadows: &mut adjust.shadows,
+                temperature: &mut adjust.temperature,
+                saturation: &mut adjust.saturation,
+                hue_shift: &mut adjust.hue_shift,
+            },
+            None,
+            &mut self.needs_process,
+            &mut self.last_slider_change,
+        );
+        ui.add_space(6.0);
+        show_selective_color(
+            ui,
+            &mut adjust.selective_color,
+            &mut self.needs_process,
+            &mut self.last_slider_change,
+        );
     }
 
     fn show_crop_section(&mut self, ui: &mut egui::Ui) {
@@ -1755,7 +2089,7 @@ fn screen_to_norm_pos(pos: egui::Pos2, img_rect: egui::Rect) -> egui::Pos2 {
 /// keystone (see `Viewer::render_state` in spot mode). The pipeline applies
 /// rotate (clockwise), then flips, then crop; `to_screen` follows that order
 /// and `to_source` inverts it exactly.
-struct SpotProjection {
+struct SourceProjection {
     /// Screen rect of the whole displayed image (zoomed, not clipped).
     img_rect: egui::Rect,
     /// Width/height of the source image before geometry.
@@ -1766,7 +2100,7 @@ struct SpotProjection {
     crop: Option<Rect>,
 }
 
-impl SpotProjection {
+impl SourceProjection {
     fn to_screen(&self, p: [f32; 2]) -> egui::Pos2 {
         let [mut u, mut v] = p;
         (u, v) = match self.rotate.rem_euclid(360) {
@@ -1823,6 +2157,36 @@ impl SpotProjection {
     }
 }
 
+/// Distance between two source-image points in shorter-side units, the
+/// unit brush and spot radii use.
+fn source_distance(a: [f32; 2], b: [f32; 2], aspect: f32) -> f32 {
+    let (sx, sy) = if aspect >= 1.0 { (aspect, 1.0) } else { (1.0, 1.0 / aspect) };
+    let (dx, dy) = ((a[0] - b[0]) * sx, (a[1] - b[1]) * sy);
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// Paints a texture covering the whole source image onto the screen through
+/// `proj` (rotate, flip and crop are axis-aligned, so its four corners map
+/// to a screen rectangle; the painter's clip rect trims the cropped parts).
+fn draw_source_texture(painter: &egui::Painter, proj: &SourceProjection, texture: egui::TextureId) {
+    let mut mesh = egui::Mesh::with_texture(texture);
+    for (source, uv) in [
+        ([0.0, 0.0], egui::pos2(0.0, 0.0)),
+        ([1.0, 0.0], egui::pos2(1.0, 0.0)),
+        ([1.0, 1.0], egui::pos2(1.0, 1.0)),
+        ([0.0, 1.0], egui::pos2(0.0, 1.0)),
+    ] {
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: proj.to_screen(source),
+            uv,
+            color: egui::Color32::WHITE,
+        });
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    painter.add(egui::Shape::mesh(mesh));
+}
+
 /// Which spot circle is under `pos`. The selected spot's source circle is
 /// checked first (it's the only source drawn), then targets, topmost (last
 /// added) first.
@@ -1830,7 +2194,7 @@ fn spot_hit_test(
     spots: &[Spot],
     selected: Option<usize>,
     pos: egui::Pos2,
-    proj: &SpotProjection,
+    proj: &SourceProjection,
 ) -> Option<(usize, SpotHandle)> {
     let inside = |center: [f32; 2], radius: f32| {
         // A minimum grab radius keeps tiny spots clickable.
@@ -1856,7 +2220,7 @@ fn spot_hit_test(
 fn draw_spot_overlay(
     painter: &egui::Painter,
     accent: egui::Color32,
-    proj: &SpotProjection,
+    proj: &SourceProjection,
     spots: &[Spot],
     selected: Option<usize>,
 ) {
@@ -2365,20 +2729,32 @@ fn show_transform_section(
     }
 }
 
-fn show_color_section(
+/// The color sliders shared by the whole-photo panel and a mask's panel.
+struct BasicColor<'a> {
+    exposure: &'a mut f32,
+    contrast: &'a mut f32,
+    highlights: &'a mut f32,
+    shadows: &'a mut f32,
+    temperature: &'a mut f32,
+    saturation: &'a mut f32,
+    hue_shift: &'a mut f32,
+}
+
+/// One labeled slider with a reset (↺) button shown when it's off zero.
+fn adjust_slider(
     ui: &mut egui::Ui,
-    state: &mut EditState,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
     needs_process: &mut bool,
     last_slider_change: &mut Option<Instant>,
 ) {
-    ui.label(egui::RichText::new("Color").strong());
-    ui.add_space(4.0);
-
     ui.horizontal(|ui| {
-        ui.label("Exposure");
+        ui.label(label);
         let resp = ui.add(
-            egui::Slider::new(&mut state.exposure, -3.0_f32..=3.0_f32)
-                .suffix(" EV")
+            egui::Slider::new(value, range)
+                .suffix(suffix)
                 .fixed_decimals(2)
                 .clamping(egui::SliderClamping::Always),
         );
@@ -2386,141 +2762,61 @@ fn show_color_section(
             *needs_process = true;
             *last_slider_change = Some(Instant::now());
         }
-        if state.exposure != 0.0 && ui.small_button("↺").clicked() {
-            state.exposure = 0.0;
+        if *value != 0.0 && ui.small_button("↺").clicked() {
+            *value = 0.0;
             *needs_process = true;
             *last_slider_change = None;
         }
     });
+}
 
-    ui.horizontal(|ui| {
-        ui.label("Contrast");
-        let resp = ui.add(
-            egui::Slider::new(&mut state.contrast, -1.0_f32..=1.0_f32)
-                .fixed_decimals(2)
-                .clamping(egui::SliderClamping::Always),
-        );
-        if resp.changed() {
-            *needs_process = true;
-            *last_slider_change = Some(Instant::now());
-        }
-        if state.contrast != 0.0 && ui.small_button("↺").clicked() {
-            state.contrast = 0.0;
-            *needs_process = true;
-            *last_slider_change = None;
-        }
-    });
-
-    ui.horizontal(|ui| {
-        ui.label("Highlights");
-        let resp = ui.add(
-            egui::Slider::new(&mut state.highlights, -1.0_f32..=1.0_f32)
-                .fixed_decimals(2)
-                .clamping(egui::SliderClamping::Always),
-        );
-        if resp.changed() {
-            *needs_process = true;
-            *last_slider_change = Some(Instant::now());
-        }
-        if state.highlights != 0.0 && ui.small_button("↺").clicked() {
-            state.highlights = 0.0;
-            *needs_process = true;
-            *last_slider_change = None;
-        }
-    });
-
-    ui.horizontal(|ui| {
-        ui.label("Shadows");
-        let resp = ui.add(
-            egui::Slider::new(&mut state.shadows, -1.0_f32..=1.0_f32)
-                .fixed_decimals(2)
-                .clamping(egui::SliderClamping::Always),
-        );
-        if resp.changed() {
-            *needs_process = true;
-            *last_slider_change = Some(Instant::now());
-        }
-        if state.shadows != 0.0 && ui.small_button("↺").clicked() {
-            state.shadows = 0.0;
-            *needs_process = true;
-            *last_slider_change = None;
-        }
-    });
-
-    ui.horizontal(|ui| {
-        ui.label("Sharpness");
-        let resp = ui.add(
-            egui::Slider::new(&mut state.sharpness, 0.0_f32..=2.0_f32)
-                .fixed_decimals(2)
-                .clamping(egui::SliderClamping::Always),
-        );
-        if resp.changed() {
-            *needs_process = true;
-            *last_slider_change = Some(Instant::now());
-        }
-        if state.sharpness != 0.0 && ui.small_button("↺").clicked() {
-            state.sharpness = 0.0;
-            *needs_process = true;
-            *last_slider_change = None;
-        }
-    });
-
-    ui.horizontal(|ui| {
-        ui.label("Temperature");
-        let resp = ui.add(
-            egui::Slider::new(&mut state.temperature, -1.0_f32..=1.0_f32)
-                .fixed_decimals(2)
-                .clamping(egui::SliderClamping::Always),
-        );
-        if resp.changed() {
-            *needs_process = true;
-            *last_slider_change = Some(Instant::now());
-        }
-        if state.temperature != 0.0 && ui.small_button("↺").clicked() {
-            state.temperature = 0.0;
-            *needs_process = true;
-            *last_slider_change = None;
-        }
-    });
-
-    ui.horizontal(|ui| {
-        ui.label("Saturation");
-        let resp = ui.add(
-            egui::Slider::new(&mut state.saturation, -1.0_f32..=1.0_f32)
-                .fixed_decimals(2)
-                .clamping(egui::SliderClamping::Always),
-        );
-        if resp.changed() {
-            *needs_process = true;
-            *last_slider_change = Some(Instant::now());
-        }
-        if state.saturation != 0.0 && ui.small_button("↺").clicked() {
-            state.saturation = 0.0;
-            *needs_process = true;
-            *last_slider_change = None;
-        }
-    });
+/// Exposure through hue shift. `sharpness` is only offered for the whole
+/// photo; masks don't carry it (ADR-0019).
+fn show_basic_color_sliders(
+    ui: &mut egui::Ui,
+    c: BasicColor,
+    sharpness: Option<&mut f32>,
+    needs_process: &mut bool,
+    last_slider_change: &mut Option<Instant>,
+) {
+    let (np, lsc) = (needs_process, last_slider_change);
+    adjust_slider(ui, "Exposure", c.exposure, -3.0..=3.0, " EV", np, lsc);
+    adjust_slider(ui, "Contrast", c.contrast, -1.0..=1.0, "", np, lsc);
+    adjust_slider(ui, "Highlights", c.highlights, -1.0..=1.0, "", np, lsc);
+    adjust_slider(ui, "Shadows", c.shadows, -1.0..=1.0, "", np, lsc);
+    if let Some(sharpness) = sharpness {
+        adjust_slider(ui, "Sharpness", sharpness, 0.0..=2.0, "", np, lsc);
+    }
+    adjust_slider(ui, "Temperature", c.temperature, -1.0..=1.0, "", np, lsc);
+    adjust_slider(ui, "Saturation", c.saturation, -1.0..=1.0, "", np, lsc);
 
     ui.horizontal(|ui| {
         ui.label("Hue Shift");
-        if state.hue_shift != 0.0 && ui.small_button("↺").clicked() {
-            state.hue_shift = 0.0;
-            *needs_process = true;
-            *last_slider_change = None;
+        if *c.hue_shift != 0.0 && ui.small_button("↺").clicked() {
+            *c.hue_shift = 0.0;
+            *np = true;
+            *lsc = None;
         }
     });
-    if hue_slider(ui, &mut state.hue_shift, 0.0, 180.0) {
-        *needs_process = true;
-        *last_slider_change = Some(Instant::now());
+    if hue_slider(ui, c.hue_shift, 0.0, 180.0) {
+        *np = true;
+        *lsc = Some(Instant::now());
     }
+}
 
-    ui.add_space(6.0);
+/// The eight selective color bands, for the whole photo or a mask.
+fn show_selective_color(
+    ui: &mut egui::Ui,
+    bands: &mut [crate::state::HslAdjust; 8],
+    needs_process: &mut bool,
+    last_slider_change: &mut Option<Instant>,
+) {
     ui.label(egui::RichText::new("Selective Color").strong());
     const HUE_LABELS: [&str; 8] = [
         "Red", "Orange", "Yellow", "Green", "Cyan", "Blue", "Purple", "Pink",
     ];
     for (idx, label) in HUE_LABELS.iter().enumerate() {
-        let adj = &mut state.selective_color[idx];
+        let adj = &mut bands[idx];
         let base = selective_base_color(idx);
         let bg = selective_bg_color(base);
         let label_color = selective_label_color(base);
@@ -2559,6 +2855,35 @@ fn show_color_section(
         });
         ui.add_space(4.0);
     }
+}
+
+fn show_color_section(
+    ui: &mut egui::Ui,
+    state: &mut EditState,
+    needs_process: &mut bool,
+    last_slider_change: &mut Option<Instant>,
+) {
+    ui.label(egui::RichText::new("Color").strong());
+    ui.add_space(4.0);
+
+    show_basic_color_sliders(
+        ui,
+        BasicColor {
+            exposure: &mut state.exposure,
+            contrast: &mut state.contrast,
+            highlights: &mut state.highlights,
+            shadows: &mut state.shadows,
+            temperature: &mut state.temperature,
+            saturation: &mut state.saturation,
+            hue_shift: &mut state.hue_shift,
+        },
+        Some(&mut state.sharpness),
+        needs_process,
+        last_slider_change,
+    );
+
+    ui.add_space(6.0);
+    show_selective_color(ui, &mut state.selective_color, needs_process, last_slider_change);
 
     ui.add_space(6.0);
     ui.label(egui::RichText::new("Graduated Filter").strong());
@@ -2866,7 +3191,7 @@ mod tests {
 
     use super::{
         CropAspect, DragTarget, HANDLE_SIZE, INTERACTIVE_PREVIEW_MAX, PreviewBackend, SpotHandle,
-        SpotProjection, spot_hit_test,
+        SourceProjection, spot_hit_test,
         bump_requested_generation_for_pending_changes, crop_hit_target, downscale_for_interactive,
         anchored_rect, constrain_aspect, edit_state_signature, load_preview_stages_with_hooks,
         resize_from_corner, resize_from_edge,
@@ -3156,6 +3481,66 @@ mod tests {
     }
 
     #[test]
+    fn mask_tool_is_exclusive_with_crop_and_spot() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.set_spot_mode(true);
+        v.set_mask_mode(true);
+        assert!(v.mask_mode && !v.spot_mode);
+        v.set_crop_mode(true);
+        v.pending_crop = Some(crop(0.0, 0.0, 0.5, 0.5));
+        v.set_mask_mode(false);
+        v.set_mask_mode(true);
+        assert!(!v.crop_mode && v.pending_crop.is_none());
+        v.set_spot_mode(true);
+        assert!(!v.mask_mode);
+    }
+
+    #[test]
+    fn mask_mode_renders_like_spot_mode() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.edit_state.rotate = 90;
+        v.edit_state.straighten = 3.0;
+        v.edit_state.crop = Some(crop(0.1, 0.1, 0.5, 0.5));
+        v.set_mask_mode(true);
+        let r = v.render_state();
+        assert_eq!((r.rotate, r.straighten), (90, 0.0));
+        assert!(r.crop.is_some());
+    }
+
+    #[test]
+    fn new_masks_get_unique_names_and_are_selected() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.add_mask();
+        v.add_mask();
+        v.edit_state.masks[0].name = "Face".into();
+        let i = v.add_mask();
+        let names: Vec<&str> = v.edit_state.masks.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["Face", "Mask 2", "Mask 1"]);
+        assert_eq!(v.selected_mask, Some(i));
+    }
+
+    #[test]
+    fn deleting_a_mask_selects_a_neighbour() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.add_mask();
+        v.add_mask();
+        v.selected_mask = Some(1);
+        v.delete_selected_mask();
+        assert_eq!(v.edit_state.masks.len(), 1);
+        assert_eq!(v.selected_mask, Some(0));
+        v.delete_selected_mask();
+        assert!(v.edit_state.masks.is_empty());
+        assert_eq!(v.selected_mask, None);
+    }
+
+    #[test]
+    fn source_distance_uses_shorter_side_units() {
+        // 2:1 image: half the width is one short side.
+        assert!((super::source_distance([0.0, 0.5], [0.5, 0.5], 2.0) - 1.0).abs() < 1e-6);
+        assert!((super::source_distance([0.5, 0.0], [0.5, 1.0], 2.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn spot_and_crop_modes_are_exclusive() {
         let mut v = super::Viewer::new(0, PreviewBackend::Auto);
         v.set_crop_mode(true);
@@ -3185,8 +3570,8 @@ mod tests {
         flip_h: bool,
         flip_v: bool,
         crop: Option<crate::state::Rect>,
-    ) -> SpotProjection {
-        SpotProjection {
+    ) -> SourceProjection {
+        SourceProjection {
             img_rect,
             source_aspect,
             rotate,

@@ -20,10 +20,12 @@ other editors. The user chose:
 - **Painted masks.** A round brush with size and feather, and a Paint/Erase toggle. Masks are
   saved as strokes in the sidecar, not as bitmaps.
 - **Several masks per photo,** which can be added, named and selected.
-- **Each mask adjusts the same basic colour controls as the global panel:** exposure, contrast,
-  highlights, shadows, temperature, saturation and hue.
-- **Floating windows** for the brush settings and for the mask list, like the debug window,
-  shown while the tool is active.
+- **Each mask adjusts the same colour controls as the global panel:** exposure, contrast,
+  highlights, shadows, temperature, saturation, hue, and the eight selective colour bands.
+- **One floating Masks window,** like the debug window, shown while the tool is active. It
+  manages masks and the brush.
+- **No second set of sliders.** While the tool is active, the normal adjustments panel edits
+  the selected mask instead of the whole photo. Leaving the tool returns it to the whole photo.
 
 Options considered:
 
@@ -33,8 +35,15 @@ Options considered:
   ([ADR-0002](0002-edit-state-sidecar-persistence.md)).
 - **Gradient and radial mask shapes.** Not needed. The graduated filter already covers the
   common gradient case.
-- **Per-mask selective colour, graduated filter or sharpness.** Left out to keep the per-mask
-  panel to one short list of sliders.
+- **Per-mask sharpening.** Left out: sharpening blurs neighbouring pixels and is a separate
+  multi-pass step on the GPU, not per-pixel colour maths. Masking it would mean running it once
+  per mask and blending, roughly doubling the GPU work for masks. Selective colour, by contrast,
+  is per-pixel maths in the same colour stage. It only adds parameters per mask, so it was
+  included after the first draft left it out.
+- **Per-mask graduated filter.** Left out: it's already a mask of its own, so one inside a mask
+  would be a mask within a mask.
+- **Separate slider sets for masks,** in the Masks window. Tried first and rejected in favour of
+  reusing the normal adjustments panel, which keeps a single place for adjustments.
 - **Switching sidecars from JSON to TOML.** TOML's advantage is hand editing, and sidecars are
   written and read by the app. Nested lists of strokes and points are noisier in TOML than in
   JSON. TOML has no null. Existing `.edits/*.json` sidecars would need migrating, or both formats
@@ -52,7 +61,8 @@ We will add painted adjustment masks.
   - `name`;
   - `strokes: Vec<Stroke>`;
   - `adjust`: its own `exposure`, `contrast`, `highlights`, `shadows`, `temperature`,
-    `saturation` and `hue_shift`, all neutral by default.
+    `saturation`, `hue_shift` and `selective_color` (8 bands, like the global setting), all
+    neutral by default. Untouched selective colour bands are left out of the sidecar.
 - **`Stroke`** has:
   - `points`, in normalized **source-image** coordinates before geometry, like spots in
     ADR-0018;
@@ -99,12 +109,16 @@ A mask's coverage at a point runs from 0 to 1.
 
 - **Tool.** A **Mask** toolbar button, exclusive with Crop and Spot. While it's active, the
   preview drops straighten and keystone and keeps rotate, flip and crop, with zoom and pan.
-  This is the spot tool's view, and it reuses its screen-to-source mapping (`SpotProjection`,
-  which will be generalized).
-- **Floating windows,** shown while the tool is active:
-  - **Brush:** size, feather, and a Paint/Erase toggle.
-  - **Masks:** a list of masks with a **+** button, click to select, rename in place, and
-    delete. Below the list are the selected mask's adjustment sliders.
+  This is the spot tool's view, and it reuses its screen-to-source mapping, generalized as
+  `SourceProjection`.
+- **Masks window,** shown while the tool is active:
+  - a list of masks with a **+** button: click a name to select it, rename it in place, or
+    delete it;
+  - the brush: size, feather, a Paint/Erase toggle, and whether to show the overlay.
+- **Adjustments panel.** While the tool is active, the normal panel shows "Editing mask:
+  <name>" and edits that mask. It shows the sliders a mask carries: the basic colour sliders and
+  selective colour. It hides the ones masks don't have: sharpening, the graduated filter, crop and
+  transform. The whole-photo panel and the mask panel share one slider implementation.
 - **Painting.** Dragging with the brush paints into the selected mask. The mask's coverage is
   shown as a translucent overlay while the tool is active. The brush outline follows the
   cursor.
@@ -129,8 +143,9 @@ Costs:
   If that isn't enough, masks may need caching separately from colour edits.
 - **Edge precision:** at the 1024px cap, a hard-edged brush (feather 0) on a very large export
   gets a slightly soft edge. That's acceptable for adjustment masks.
-- **Two new floating windows.** They add UI state: position, visibility, and which mask is
-  selected.
+- **Two meanings for one panel.** The adjustments panel means "whole photo" or "selected mask"
+  depending on the tool. A clear header shows which, but it's modal behaviour users have to
+  notice.
 - **Sidecar size: watch this.** Sidecars are pretty-printed JSON, which puts every number of an
   array on its own line. A single 200-point stroke becomes roughly 800 lines. Sparse point
   recording limits the growth, but long painting sessions could still make sidecars large and

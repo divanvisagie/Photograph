@@ -3,6 +3,7 @@ pub mod exposure;
 pub mod filters;
 pub mod gpu_pipeline;
 pub mod highlights;
+pub mod masks;
 pub mod sharpness;
 pub mod spots;
 pub mod transform;

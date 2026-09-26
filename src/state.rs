@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// Per-hue HSL adjustment used for selective color controls.
 pub struct HslAdjust {
     pub hue: f32,
@@ -127,6 +127,52 @@ pub fn default_source(target: [f32; 2], radius: f32, image_aspect: f32) -> [f32;
         .unwrap_or_else(|| clamp_center(candidates[0], radius, image_aspect))
 }
 
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+/// A mask's own adjustments — the global color sliders and selective color,
+/// neutral at zero (ADR-0019).
+pub struct MaskAdjust {
+    pub exposure: f32,
+    pub contrast: f32,
+    pub highlights: f32,
+    pub shadows: f32,
+    pub temperature: f32,
+    pub saturation: f32,
+    pub hue_shift: f32,
+    /// Same bands as `EditState::selective_color`. Omitted from the sidecar
+    /// while untouched.
+    #[serde(skip_serializing_if = "is_neutral_selective")]
+    pub selective_color: [HslAdjust; 8],
+}
+
+fn is_neutral_selective(bands: &[HslAdjust; 8]) -> bool {
+    bands.iter().all(|b| *b == HslAdjust::default())
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One brush stroke. Like spots, `points` are normalized source-image
+/// coordinates (before geometry) and `radius` is a fraction of the shorter
+/// side (ADR-0019).
+pub struct Stroke {
+    pub points: Vec<[f32; 2]>,
+    pub radius: f32,
+    /// Soft edge width as a fraction of `radius`, 0–1.
+    pub feather: f32,
+    /// Subtracts from the mask instead of adding to it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub erase: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A named painted mask and the adjustments applied through it.
+pub struct Mask {
+    pub name: String,
+    #[serde(default)]
+    pub strokes: Vec<Stroke>,
+    #[serde(default)]
+    pub adjust: MaskAdjust,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 /// Serialized edit parameters stored alongside an image.
@@ -152,6 +198,10 @@ pub struct EditState {
     /// Omitted from the sidecar when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub spots: Vec<Spot>,
+    /// Painted adjustment masks, applied in order after the global color
+    /// adjustments (ADR-0019). Omitted from the sidecar when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub masks: Vec<Mask>,
 }
 
 impl Default for EditState {
@@ -174,6 +224,7 @@ impl Default for EditState {
             graduated_filter: None,
             sharpness: 0.0,
             spots: Vec::new(),
+            masks: Vec::new(),
         }
     }
 }
@@ -223,6 +274,33 @@ mod tests {
         state.spots.push(Spot::new([0.5, 0.5], 0.05, 1.5));
         let back: EditState = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
         assert_eq!(back.spots, state.spots);
+    }
+
+    #[test]
+    fn masks_round_trip_and_stay_out_of_mask_free_sidecars() {
+        let mut state = EditState::default();
+        assert!(!serde_json::to_string(&state).unwrap().contains("masks"));
+        state.masks.push(Mask {
+            name: "Face".into(),
+            strokes: vec![Stroke {
+                points: vec![[0.1, 0.2], [0.3, 0.4]],
+                radius: 0.05,
+                feather: 0.5,
+                erase: false,
+            }],
+            adjust: MaskAdjust {
+                exposure: 0.5,
+                ..Default::default()
+            },
+        });
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(!json.contains("erase"), "paint strokes omit the erase flag");
+        let adjust_json = serde_json::to_string(&state.masks[0].adjust).unwrap();
+        assert!(!adjust_json.contains("selective_color"), "untouched bands are omitted");
+        state.masks[0].adjust.selective_color[3].saturation = -0.5;
+        let json = serde_json::to_string(&state).unwrap();
+        let back: EditState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.masks, state.masks);
     }
 
     #[test]
