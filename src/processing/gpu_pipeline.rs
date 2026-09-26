@@ -690,12 +690,12 @@ fn apply_gpu(src: &RgbaImage, state: &EditState) -> Option<RgbaImage> {
         for mask in state.masks.iter().filter(|m| super::masks::is_active(m)) {
             let mut coverage = super::masks::output_coverage(mask, state, src_w, src_h);
             if coverage.dimensions() != (out_w, out_h) {
-                coverage = image::imageops::resize(
-                    &coverage,
+                coverage = std::sync::Arc::new(image::imageops::resize(
+                    &*coverage,
                     out_w,
                     out_h,
                     image::imageops::FilterType::Triangle,
-                );
+                ));
             }
             let coverage_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("gpu_pipeline_mask_coverage"),

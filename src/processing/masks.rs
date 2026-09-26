@@ -7,7 +7,12 @@
 //! resolution; this module is the one definition of that shape, shared by
 //! the editor overlay and (from step 2) the CPU and GPU pipelines.
 
+use std::collections::VecDeque;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex};
+
 use image::{DynamicImage, GrayImage, RgbaImage};
+use rayon::prelude::*;
 
 use crate::state::{EditState, Mask, Stroke};
 
@@ -163,19 +168,66 @@ pub fn adjust_state(mask: &Mask) -> EditState {
     }
 }
 
+/// Recently computed coverages, keyed by `coverage_key`. Color-only edits —
+/// moving a mask's sliders, global adjustments — reuse them instead of
+/// re-rasterizing, scaling and warping every render.
+static COVERAGE_CACHE: Mutex<VecDeque<(u64, Arc<GrayImage>)>> = Mutex::new(VecDeque::new());
+/// Cached coverages are dropped oldest-first beyond this many bytes (a full
+/// 24 MP export coverage is 24 MB; previews are a few MB).
+const COVERAGE_CACHE_BYTES: usize = 96 * 1024 * 1024;
+
+/// Everything a coverage depends on: the strokes, the source size, and the
+/// geometry that carries it into output space. Not the adjustments.
+fn coverage_key(mask: &Mask, state: &EditState, src_w: u32, src_h: u32) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (src_w, src_h).hash(&mut h);
+    for stroke in &mask.strokes {
+        (stroke.radius.to_bits(), stroke.feather.to_bits(), stroke.erase).hash(&mut h);
+        for p in &stroke.points {
+            (p[0].to_bits(), p[1].to_bits()).hash(&mut h);
+        }
+    }
+    if crate::processing::gpu_pipeline::has_geometry(state) {
+        (state.rotate, state.flip_h, state.flip_v).hash(&mut h);
+        (state.straighten.to_bits(), state.keystone.vertical.to_bits()).hash(&mut h);
+        state.keystone.horizontal.to_bits().hash(&mut h);
+        if let Some(c) = &state.crop {
+            (c.x.to_bits(), c.y.to_bits(), c.width.to_bits(), c.height.to_bits()).hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
 /// `mask`'s coverage in output space, for a `src_w`×`src_h` source edited
 /// with `state`'s geometry: rasterized in source space at a capped size,
 /// scaled to the source, then run through the same geometry as the image
 /// (`transform::apply_geometry`). Both the CPU and GPU pipelines use this,
-/// so their coverage is identical.
-pub fn output_coverage(mask: &Mask, state: &EditState, src_w: u32, src_h: u32) -> GrayImage {
+/// so their coverage is identical. Results are cached (`COVERAGE_CACHE`).
+pub fn output_coverage(mask: &Mask, state: &EditState, src_w: u32, src_h: u32) -> Arc<GrayImage> {
+    let key = coverage_key(mask, state, src_w, src_h);
+    if let Ok(cache) = COVERAGE_CACHE.lock() {
+        if let Some((_, hit)) = cache.iter().find(|(k, _)| *k == key) {
+            return Arc::clone(hit);
+        }
+    }
+    let coverage = Arc::new(compute_output_coverage(mask, state, src_w, src_h));
+    if let Ok(mut cache) = COVERAGE_CACHE.lock() {
+        cache.push_back((key, Arc::clone(&coverage)));
+        let mut bytes: usize = cache.iter().map(|(_, c)| c.as_raw().len()).sum();
+        while bytes > COVERAGE_CACHE_BYTES && cache.len() > 1 {
+            if let Some((_, old)) = cache.pop_front() {
+                bytes -= old.as_raw().len();
+            }
+        }
+    }
+    coverage
+}
+
+fn compute_output_coverage(mask: &Mask, state: &EditState, src_w: u32, src_h: u32) -> GrayImage {
     let aspect = src_w as f32 / src_h.max(1) as f32;
     let (rw, rh) = raster_size(aspect, MASK_RASTER_MAX.min(src_w.max(src_h)).max(1));
     let raster = rasterize(mask, rw, rh);
-    let small = GrayImage::from_fn(rw, rh, |x, y| {
-        image::Luma([(raster[(y * rw + x) as usize] * 255.0).round() as u8])
-    });
-    let full = image::imageops::resize(&small, src_w, src_h, image::imageops::FilterType::Triangle);
+    let full = upscale(&raster, rw, rh, src_w, src_h);
     if !crate::processing::gpu_pipeline::has_geometry(state) {
         return full;
     }
@@ -186,6 +238,36 @@ pub fn output_coverage(mask: &Mask, state: &EditState, src_w: u32, src_h: u32) -
     });
     let warped = crate::processing::transform::apply_geometry(DynamicImage::ImageRgba8(rgba), state);
     warped.to_luma8()
+}
+
+/// Bilinear scale of a `rw`×`rh` coverage raster to `w`×`h` (pixel centers
+/// aligned, edges clamped), rows in parallel. Much faster than a generic
+/// resize for this one-channel, smooth data.
+fn upscale(raster: &[f32], rw: u32, rh: u32, w: u32, h: u32) -> GrayImage {
+    let (rw_us, rh_us) = (rw as usize, rh as usize);
+    let (sx, sy) = (rw as f32 / w as f32, rh as f32 / h as f32);
+    // Horizontal sample positions are the same for every row.
+    let columns: Vec<(usize, usize, f32)> = (0..w)
+        .map(|x| {
+            let fx = ((x as f32 + 0.5) * sx - 0.5).clamp(0.0, (rw - 1) as f32);
+            let x0 = fx.floor() as usize;
+            (x0, (x0 + 1).min(rw_us - 1), fx - x0 as f32)
+        })
+        .collect();
+    let mut out = vec![0u8; (w * h) as usize];
+    out.par_chunks_mut(w as usize).enumerate().for_each(|(y, row)| {
+        let fy = ((y as f32 + 0.5) * sy - 0.5).clamp(0.0, (rh - 1) as f32);
+        let y0 = fy.floor() as usize;
+        let y1 = (y0 + 1).min(rh_us - 1);
+        let ty = fy - y0 as f32;
+        let (r0, r1) = (&raster[y0 * rw_us..][..rw_us], &raster[y1 * rw_us..][..rw_us]);
+        for (px, &(x0, x1, tx)) in row.iter_mut().zip(&columns) {
+            let top = r0[x0] + (r0[x1] - r0[x0]) * tx;
+            let bottom = r1[x0] + (r1[x1] - r1[x0]) * tx;
+            *px = ((top + (bottom - top) * ty) * 255.0).round() as u8;
+        }
+    });
+    GrayImage::from_raw(w, h, out).expect("buffer matches dimensions")
 }
 
 /// Applies every active mask to `img` (CPU path; output space, after the
@@ -323,6 +405,35 @@ mod tests {
         let c = output_coverage(&mask, &state, 80, 60);
         assert_eq!(c.dimensions(), (40, 60));
         assert!(c.pixels().all(|p| p.0[0] == 0));
+    }
+
+    #[test]
+    fn upscale_is_exact_at_the_same_size_and_interpolates_between() {
+        let raster = [0.0, 1.0, 0.0, 1.0];
+        let same = upscale(&raster, 2, 2, 2, 2);
+        assert_eq!(same.as_raw(), &vec![0, 255, 0, 255]);
+        let wide = upscale(&[0.0, 1.0], 2, 1, 4, 1);
+        let v: Vec<u8> = wide.as_raw().clone();
+        assert_eq!((v[0], v[3]), (0, 255), "edges clamp to the end samples");
+        assert!(v[1] > 0 && v[1] < v[2] && v[2] < 255, "monotonic in between: {v:?}");
+    }
+
+    #[test]
+    fn coverage_is_cached_until_strokes_size_or_geometry_change() {
+        let mut state = EditState::default();
+        let mut m = brightening_mask(vec![stroke(&[[0.37, 0.41]], 0.1, 0.5, false)]);
+        let a = output_coverage(&m, &state, 64, 48);
+        assert!(Arc::ptr_eq(&a, &output_coverage(&m, &state, 64, 48)), "same inputs hit");
+        m.adjust.exposure = -2.0;
+        assert!(Arc::ptr_eq(&a, &output_coverage(&m, &state, 64, 48)), "adjustments don't matter");
+        state.exposure = 1.0;
+        assert!(Arc::ptr_eq(&a, &output_coverage(&m, &state, 64, 48)), "color doesn't matter");
+        state.rotate = 90;
+        assert!(!Arc::ptr_eq(&a, &output_coverage(&m, &state, 64, 48)), "geometry does");
+        state.rotate = 0;
+        m.strokes[0].points.push([0.5, 0.5]);
+        assert!(!Arc::ptr_eq(&a, &output_coverage(&m, &state, 64, 48)), "strokes do");
+        assert!(!Arc::ptr_eq(&a, &output_coverage(&m, &state, 32, 24)), "size does");
     }
 
     #[test]
