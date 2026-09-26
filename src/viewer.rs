@@ -148,6 +148,8 @@ enum ProcessQuality {
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct PreviewCacheKey {
     source_signature: u64,
+    /// Which loaded preview was rendered (see `Viewer::preview_revision`).
+    preview_revision: u64,
     edit_signature: u64,
     input_width: u32,
     input_height: u32,
@@ -253,6 +255,10 @@ pub struct Viewer {
     preview_backend: PreviewBackend,
     current_path: Option<PathBuf>,
     preview: Option<DynamicImage>,
+    /// Bumped whenever `preview` is replaced. A RAW first shows its embedded
+    /// camera JPEG, then its full develop at the same size; render caches
+    /// key on this so the develop isn't mistaken for the JPEG's renders.
+    preview_revision: u64,
     pub edit_state: EditState,
     needs_process: bool,
     needs_final_process: bool,
@@ -326,6 +332,7 @@ impl Viewer {
             preview_backend,
             current_path: None,
             preview: None,
+            preview_revision: 0,
             edit_state: EditState::default(),
             needs_process: false,
             needs_final_process: false,
@@ -676,6 +683,7 @@ impl Viewer {
     ) -> PreviewCacheKey {
         PreviewCacheKey {
             source_signature: self.source_signature,
+            preview_revision: self.preview_revision,
             edit_signature: edit_state_signature(&self.render_state()),
             input_width: preview.width(),
             input_height: preview.height(),
@@ -726,6 +734,7 @@ impl Viewer {
                 BgResult::Loaded { path, img } => {
                     if self.current_path.as_ref() == Some(&path) {
                         self.preview = Some(img);
+                        self.preview_revision = self.preview_revision.wrapping_add(1);
                         self.loading = false;
                         self.reloading_preview = false;
                         self.needs_process = true;
@@ -787,11 +796,12 @@ impl Viewer {
     }
 
     /// Identifies a "before" render: its state plus the preview it came from
-    /// (which changes when a higher-resolution preview reloads).
+    /// (which changes when the RAW develop replaces the embedded JPEG, or a
+    /// higher-resolution preview reloads).
     fn original_signature(&self, preview: &DynamicImage) -> u64 {
         let mut hasher = DefaultHasher::new();
         edit_state_signature(&self.original_state()).hash(&mut hasher);
-        (preview.width(), preview.height()).hash(&mut hasher);
+        (self.preview_revision, preview.width(), preview.height()).hash(&mut hasher);
         hasher.finish()
     }
 
@@ -3710,6 +3720,29 @@ mod tests {
         let mut v = super::Viewer::new(0, PreviewBackend::Auto);
         v.set_crop_mode(true);
         assert!(!v.needs_process);
+    }
+
+    #[test]
+    fn a_replaced_preview_of_the_same_size_gets_new_render_keys() {
+        // A RAW's embedded JPEG and its full develop arrive at the same size.
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        let tx = v.tx.clone();
+        let jpeg_look = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(8, 6, Rgba([200, 90, 60, 255])));
+        let develop = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(8, 6, Rgba([150, 110, 100, 255])));
+        let path = std::path::PathBuf::from("/photos/a.CR3");
+        v.current_path = Some(path.clone());
+        let ctx = egui::Context::default();
+
+        tx.send(super::BgResult::Loaded { path: path.clone(), img: jpeg_look.clone() }).unwrap();
+        v.drain(&ctx);
+        let key_jpeg = v.build_preview_cache_key(&jpeg_look, super::ProcessQuality::Final);
+        let before_jpeg = v.original_signature(&jpeg_look);
+
+        tx.send(super::BgResult::Loaded { path, img: develop.clone() }).unwrap();
+        v.drain(&ctx);
+        let key_develop = v.build_preview_cache_key(&develop, super::ProcessQuality::Final);
+        assert!(key_jpeg != key_develop, "same size and edits, different preview");
+        assert_ne!(before_jpeg, v.original_signature(&develop));
     }
 
     #[test]
