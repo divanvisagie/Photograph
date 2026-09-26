@@ -56,6 +56,7 @@ mechanics of adding one.
 | [0016](0016-drop-snap-packaging.md) | Drop Snap packaging; ship Linux .deb only | Accepted |
 | [0017](0017-discover-mounts-for-sidebar.md) | Discover storage and network mounts for the sidebar | Accepted |
 | [0018](0018-spot-removal-in-source-coordinates.md) | Spot removal (clone and heal) as the first pipeline stage, in source-image coordinates | Accepted |
+| [0019](0019-painted-adjustment-masks.md) | Painted adjustment masks stored as brush strokes | Accepted |
 
 ## Decision Relationship
 
