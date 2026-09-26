@@ -556,6 +556,7 @@ impl PhotographApp {
     fn show_photo_header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui.button("\u{2039} Back to Library").clicked() {
+                self.viewer.save_edits();
                 self.view_mode = ViewMode::Library;
             }
             ui.separator();
@@ -854,12 +855,16 @@ impl eframe::App for PhotographApp {
         // Poll background work before rendering panels
         self.browser.poll(ctx);
         self.viewer.drain(ctx);
+        for path in self.viewer.take_changed_sidecars() {
+            self.browser.refresh_thumbnail(&path);
+        }
         self.poll_render_events();
 
         // Keyboard navigation while viewing a photo (skip while a text field
         // like the sidebar path bar has focus).
         if self.view_mode != ViewMode::Library && ctx.memory(|m| m.focused().is_none()) {
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.viewer.save_edits();
                 self.view_mode = ViewMode::Library;
             }
             if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {

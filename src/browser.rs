@@ -151,6 +151,12 @@ impl Browser {
         self.selection.contains(path)
     }
 
+    /// Drops `path`'s thumbnail so it's regenerated — e.g. after its edits
+    /// changed — on the next poll.
+    pub fn refresh_thumbnail(&mut self, path: &std::path::Path) {
+        self.thumbnails.remove(path);
+    }
+
     fn queue_pending_thumbs(&mut self, ctx: &egui::Context) {
         let in_flight = self
             .thumbnails
@@ -572,25 +578,61 @@ fn draw_thumb_cell(
     resp
 }
 
+/// A photo's grid thumbnail: the edited thumbnail saved beside its sidecar
+/// when it has one (see `Viewer::save_edits`), otherwise the plain
+/// thumbnail from the camera preview, cached in `cache_dir`.
 fn generate_thumb(path: &PathBuf, cache_dir: &PathBuf) -> Option<(Vec<u8>, usize, usize)> {
-    let thumb_path = crate::thumbnail::cache_path(path, cache_dir);
-
-    let img = if thumb_path.exists() {
-        image::open(&thumb_path).ok()?
-    } else {
-        let full = crate::thumbnail::open_image_for_preview(path).ok()?;
-        let t = full.thumbnail(crate::thumbnail::THUMB_SIZE, crate::thumbnail::THUMB_SIZE);
-        let _ = std::fs::create_dir_all(cache_dir);
-        let _ = t.save(&thumb_path);
-        t
+    let edited = crate::state::edited_thumbnail_path(path);
+    let img = match edited.exists().then(|| image::open(&edited).ok()).flatten() {
+        Some(img) => img,
+        None => plain_thumb(path, cache_dir)?,
     };
-
     let rgba = img.to_rgba8();
     let w = rgba.width() as usize;
     let h = rgba.height() as usize;
     Some((rgba.into_raw(), w, h))
 }
 
+fn plain_thumb(path: &PathBuf, cache_dir: &PathBuf) -> Option<image::DynamicImage> {
+    let thumb_path = crate::thumbnail::cache_path(path, cache_dir);
+    if thumb_path.exists() {
+        return image::open(&thumb_path).ok();
+    }
+    let full = crate::thumbnail::open_image_for_preview(path).ok()?;
+    let t = full.thumbnail(crate::thumbnail::THUMB_SIZE, crate::thumbnail::THUMB_SIZE);
+    let _ = std::fs::create_dir_all(cache_dir);
+    let _ = t.save(&thumb_path);
+    Some(t)
+}
+
 fn is_image(path: &std::path::Path) -> bool {
     crate::thumbnail::is_supported_image(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_edited_thumbnail_is_preferred_while_it_exists() {
+        let dir = std::env::temp_dir().join(format!("photograph-thumbs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".edits")).unwrap();
+        let cache = dir.join(".thumbnails");
+        let photo = dir.join("grey.png");
+        image::RgbaImage::from_pixel(64, 48, image::Rgba([100, 100, 100, 255]))
+            .save(&photo)
+            .unwrap();
+        let center = |t: &(Vec<u8>, usize, usize)| t.0[((t.2 / 2) * t.1 + t.1 / 2) * 4];
+
+        assert_eq!(center(&generate_thumb(&photo, &cache).unwrap()), 100, "plain");
+        let edited = crate::state::edited_thumbnail_path(&photo);
+        image::RgbaImage::from_pixel(32, 24, image::Rgba([220, 220, 220, 255]))
+            .save_with_format(&edited, image::ImageFormat::WebP)
+            .unwrap();
+        assert_eq!(center(&generate_thumb(&photo, &cache).unwrap()), 220, "edited");
+        std::fs::remove_file(&edited).unwrap();
+        assert_eq!(center(&generate_thumb(&photo, &cache).unwrap()), 100, "plain again");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

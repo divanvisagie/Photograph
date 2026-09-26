@@ -249,6 +249,34 @@ impl EditState {
         serde_json::from_str(&json).ok()
     }
 
+    /// Brings the sidecar in line with this state: written when there are
+    /// edits, removed — with its edited thumbnail — when there are none (so
+    /// resetting everything doesn't leave old edits to come back). Returns
+    /// whether the sidecar changed.
+    pub fn sync_sidecar(&self, image_path: &Path) -> anyhow::Result<bool> {
+        let sidecar = sidecar_path(image_path);
+        let existing = std::fs::read_to_string(&sidecar).ok();
+        if !self.has_edits() {
+            let _ = std::fs::remove_file(edited_thumbnail_path(image_path));
+            if existing.is_some() {
+                std::fs::remove_file(&sidecar)?;
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+        let json = serde_json::to_string_pretty(self)?;
+        if existing.as_deref() == Some(json.as_str()) {
+            return Ok(false);
+        }
+        self.save(image_path)?;
+        Ok(true)
+    }
+
+    /// Whether anything differs from the unedited default.
+    pub fn has_edits(&self) -> bool {
+        serde_json::to_string(self).ok() != serde_json::to_string(&EditState::default()).ok()
+    }
+
     /// Saves the current edit state to the image sidecar JSON.
     pub fn save(&self, image_path: &Path) -> anyhow::Result<()> {
         let sidecar = sidecar_path(image_path);
@@ -259,6 +287,15 @@ impl EditState {
         std::fs::write(sidecar, json)?;
         Ok(())
     }
+}
+
+/// Thumbnail showing an edited photo's edits, saved beside its sidecar:
+/// `.edits/<filename>.webp`. The library shows it in place of the plain
+/// thumbnail while it exists.
+pub fn edited_thumbnail_path(image_path: &Path) -> std::path::PathBuf {
+    let dir = image_path.parent().unwrap_or(Path::new("."));
+    let filename = image_path.file_name().unwrap_or_default().to_string_lossy();
+    dir.join(".edits").join(format!("{}.webp", filename))
 }
 
 fn sidecar_path(image_path: &Path) -> std::path::PathBuf {
@@ -345,6 +382,24 @@ mod tests {
     fn spot_new_keeps_the_whole_target_circle_inside() {
         let spot = Spot::new([0.0, 1.0], 0.05, 1.0);
         assert_eq!(spot.target, [0.05, 0.95]);
+    }
+
+    #[test]
+    fn sync_sidecar_writes_only_on_change_and_removes_when_reset() {
+        let dir = std::env::temp_dir().join(format!("photograph-sync-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("a.jpg");
+        let mut state = EditState::default();
+        assert!(!state.sync_sidecar(&image).unwrap(), "nothing to write or remove");
+        state.exposure = 0.5;
+        assert!(state.sync_sidecar(&image).unwrap(), "first write");
+        assert!(!state.sync_sidecar(&image).unwrap(), "unchanged");
+        std::fs::write(edited_thumbnail_path(&image), b"thumb").unwrap();
+        state.exposure = 0.0;
+        assert!(state.sync_sidecar(&image).unwrap(), "reset removes the sidecar");
+        assert!(!sidecar_path(&image).exists());
+        assert!(!edited_thumbnail_path(&image).exists(), "and its edited thumbnail");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

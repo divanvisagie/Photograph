@@ -39,6 +39,8 @@ enum BgResult {
         cache_key: PreviewCacheKey,
         image: Arc<egui::ColorImage>,
     },
+    /// An edited thumbnail was written for this photo (or failed to be).
+    ThumbnailSaved(PathBuf),
     /// Split view's "before" image, rendered for the state with `signature`.
     Original {
         signature: u64,
@@ -260,6 +262,8 @@ pub struct Viewer {
     /// key on this so the develop isn't mistaken for the JPEG's renders.
     preview_revision: u64,
     pub edit_state: EditState,
+    /// Photos whose sidecar was written or removed, for thumbnail refreshes.
+    changed_sidecars: Vec<PathBuf>,
     needs_process: bool,
     needs_final_process: bool,
     last_slider_change: Option<Instant>,
@@ -334,6 +338,7 @@ impl Viewer {
             preview: None,
             preview_revision: 0,
             edit_state: EditState::default(),
+            changed_sidecars: Vec::new(),
             needs_process: false,
             needs_final_process: false,
             last_slider_change: None,
@@ -402,17 +407,66 @@ impl Viewer {
 
     /// Loads a new image path and resets viewer state for background preview loading.
     /// Persists current edits to the sidecar file, if any.
-    pub fn save_edits(&self) {
-        if let Some(path) = &self.current_path {
-            if self.has_edits() {
-                let _ = self.edit_state.save(path);
-            }
+    /// Writes the current photo's edits to its sidecar (removing it when
+    /// there are none). Photos whose sidecar changed are queued for
+    /// `take_changed_sidecars`, so the library can refresh their thumbnails.
+    ///
+    /// Photos with edits also get a thumbnail showing them, saved beside the
+    /// sidecar — whenever the edits changed, or if it's missing (e.g. edits
+    /// made before thumbnails were saved). It's rendered in the background
+    /// from the in-memory preview, and the photo is only queued once the
+    /// file is written, so the library never re-reads the old one.
+    pub fn save_edits(&mut self) {
+        let Some(path) = self.current_path.clone() else {
+            return;
+        };
+        let changed = self.edit_state.sync_sidecar(&path).unwrap_or(false);
+        let has_edits = self.edit_state.has_edits();
+        let missing = !crate::state::edited_thumbnail_path(&path).exists();
+        if has_edits && (changed || missing) && self.write_edited_thumbnail(&path) {
+            return; // queued when the thumbnail lands (`BgResult::ThumbnailSaved`)
+        }
+        if changed {
+            self.changed_sidecars.push(path);
         }
     }
 
+    /// Renders and saves `path`'s edited thumbnail on a worker thread.
+    /// Returns false if there's no preview to render it from.
+    fn write_edited_thumbnail(&self, path: &Path) -> bool {
+        let Some(preview) = self.preview.clone() else {
+            return false;
+        };
+        let state = self.edit_state.clone();
+        let path = path.to_path_buf();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let size = crate::thumbnail::THUMB_SIZE;
+            // Edits are resolution-independent, so render a small copy.
+            let small = DynamicImage::ImageRgba8(preview.thumbnail(size * 2, size * 2).into_rgba8());
+            let rendered = crate::processing::gpu_pipeline::try_apply(&small, &state).or_else(|| {
+                crate::processing::gpu_pipeline::allow_debug_cpu_fallback()
+                    .then(|| crate::processing::transform::apply(&small, &state))
+            });
+            if let Some(rendered) = rendered {
+                let thumb_path = crate::state::edited_thumbnail_path(&path);
+                if let Some(dir) = thumb_path.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                let _ = rendered.thumbnail(size, size).save(&thumb_path);
+            }
+            let _ = tx.send(BgResult::ThumbnailSaved(path));
+        });
+        true
+    }
+
+    /// Photos whose saved edits changed since the last call.
+    pub fn take_changed_sidecars(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.changed_sidecars)
+    }
+
     fn has_edits(&self) -> bool {
-        serde_json::to_string(&self.edit_state).ok()
-            != serde_json::to_string(&EditState::default()).ok()
+        self.edit_state.has_edits()
     }
 
     /// The edit state the preview is rendered with. In crop mode the applied
@@ -561,11 +615,7 @@ impl Viewer {
             return;
         }
         // Save current edits before switching
-        if let Some(prev_path) = &self.current_path {
-            if self.has_edits() {
-                let _ = self.edit_state.save(prev_path);
-            }
-        }
+        self.save_edits();
         self.current_path = Some(path.clone());
         self.source_signature = source_signature(&path);
         self.preview = None;
@@ -764,6 +814,9 @@ impl Viewer {
                         egui::ImageData::Color(image),
                         egui::TextureOptions::LINEAR,
                     ));
+                }
+                BgResult::ThumbnailSaved(path) => {
+                    self.changed_sidecars.push(path);
                 }
                 BgResult::Original { signature, image } => {
                     // Drop renders for a state that's since changed.
@@ -3720,6 +3773,46 @@ mod tests {
         let mut v = super::Viewer::new(0, PreviewBackend::Auto);
         v.set_crop_mode(true);
         assert!(!v.needs_process);
+    }
+
+    #[test]
+    fn saving_edits_writes_a_thumbnail_showing_them_and_reset_removes_it() {
+        if !crate::processing::gpu_pipeline::is_available()
+            && !crate::processing::gpu_pipeline::allow_debug_cpu_fallback()
+        {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("photograph-save-thumb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let photo = dir.join("grey.png");
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.current_path = Some(photo.clone());
+        v.preview = Some(DynamicImage::ImageRgba8(ImageBuffer::from_pixel(64, 48, Rgba([100, 100, 100, 255]))));
+        v.edit_state.exposure = 1.0;
+        let ctx = egui::Context::default();
+
+        v.save_edits();
+        assert!(v.take_changed_sidecars().is_empty(), "not reported before the thumbnail lands");
+        let mut changed = Vec::new();
+        for _ in 0..200 {
+            v.drain(&ctx);
+            changed = v.take_changed_sidecars();
+            if !changed.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(changed, vec![photo.clone()]);
+        let thumb = image::open(crate::state::edited_thumbnail_path(&photo)).unwrap().to_rgba8();
+        let (w, h) = thumb.dimensions();
+        assert!(thumb.get_pixel(w / 2, h / 2).0[0] > 150, "thumbnail shows the edit");
+
+        v.edit_state.exposure = 0.0;
+        v.save_edits();
+        assert_eq!(v.take_changed_sidecars(), vec![photo.clone()], "reset reported at once");
+        assert!(!crate::state::edited_thumbnail_path(&photo).exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
