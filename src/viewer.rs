@@ -400,6 +400,24 @@ impl Viewer {
         self.last_slider_change = dragging.then(Instant::now);
     }
 
+    /// Best-matching source for a new spot, searched on the unedited preview
+    /// (which shares spot coordinates). `None` keeps the spot's default.
+    fn auto_spot_source(&self, spot: &Spot) -> Option<[f32; 2]> {
+        let preview = self.preview.as_ref()?;
+        let find = |img: &RgbaImage| {
+            crate::processing::spots::find_source(
+                img,
+                spot.target,
+                spot.radius,
+                &self.edit_state.spots,
+            )
+        };
+        match preview.as_rgba8() {
+            Some(rgba) => find(rgba),
+            None => find(&preview.to_rgba8()),
+        }
+    }
+
     fn delete_selected_spot(&mut self) {
         if let Some(i) = self.selected_spot.take() {
             if i < self.edit_state.spots.len() {
@@ -1280,7 +1298,10 @@ impl Viewer {
                         self.spot_size = self.edit_state.spots[index].radius;
                     }
                     None => {
-                        let spot = Spot::new(proj.to_source(pos), self.spot_size, aspect);
+                        let mut spot = Spot::new(proj.to_source(pos), self.spot_size, aspect);
+                        if let Some(source) = self.auto_spot_source(&spot) {
+                            spot.source = source;
+                        }
                         self.edit_state.spots.push(spot);
                         self.selected_spot = Some(self.edit_state.spots.len() - 1);
                         self.spots_changed(false);

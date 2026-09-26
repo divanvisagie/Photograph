@@ -9,7 +9,7 @@
 
 use image::{DynamicImage, RgbaImage};
 
-use crate::state::Spot;
+use crate::state::{Spot, clamp_center, spot_radius_xy};
 
 /// A spot resolved to pixel units for a `width`×`height` image.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -100,6 +100,99 @@ fn apply_rgba(src: &RgbaImage, spots: &[Spot]) -> RgbaImage {
     out
 }
 
+/// How far out the compared ring sits, as a multiple of the spot radius:
+/// just outside the circle, where the pixels are unaffected by the blemish.
+const RING_SCALE: f32 = 1.3;
+const RING_SAMPLES: usize = 32;
+/// Candidate distances from the target, in spot radii (closest first, so
+/// equal scores keep the nearer source), and angles per distance.
+const CANDIDATE_DISTANCES: [f32; 4] = [2.5, 3.5, 5.0, 6.5];
+const CANDIDATE_ANGLES: usize = 16;
+
+/// Picks a source for a new spot at `target` on the unedited source image:
+/// the nearby circle whose surroundings best match the target's. The
+/// target's inside is the blemish, so only the ring just outside each
+/// circle is compared, as raw color: Clone doesn't adjust tone, so a match
+/// in similar light is what makes the patch seamless.
+///
+/// Candidates must fit inside the image with their ring, stay clear of the
+/// target, and not sit on another spot's target (a known blemish). Returns
+/// `None` when nothing fits, e.g. a large spot in a small image.
+pub fn find_source(
+    img: &RgbaImage,
+    target: [f32; 2],
+    radius: f32,
+    avoid: &[Spot],
+) -> Option<[f32; 2]> {
+    let (w, h) = img.dimensions();
+    if w == 0 || h == 0 || radius <= 0.0 {
+        return None;
+    }
+    let aspect = w as f32 / h as f32;
+    let [rx, ry] = spot_radius_xy(radius, aspect);
+    let ring_radius = radius * RING_SCALE;
+    let [ring_rx, ring_ry] = spot_radius_xy(ring_radius, aspect);
+    let ring_offsets: Vec<[f32; 2]> = (0..RING_SAMPLES)
+        .map(|i| {
+            let a = i as f32 / RING_SAMPLES as f32 * std::f32::consts::TAU;
+            [a.cos() * ring_rx, a.sin() * ring_ry]
+        })
+        .collect();
+    let sample = |p: [f32; 2]| -> Option<[f32; 3]> {
+        let (x, y) = (p[0] * w as f32, p[1] * h as f32);
+        if x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 {
+            return None;
+        }
+        let px = img.get_pixel(x as u32, y as u32).0;
+        Some([px[0] as f32, px[1] as f32, px[2] as f32])
+    };
+
+    // The target's ring; points off the image are left out of every score.
+    let target_ring: Vec<Option<[f32; 3]>> = ring_offsets
+        .iter()
+        .map(|o| sample([target[0] + o[0], target[1] + o[1]]))
+        .collect();
+    if target_ring.iter().all(Option::is_none) {
+        return None;
+    }
+
+    // Distance between two normalized points in spot-radius units.
+    let short = w.min(h) as f32;
+    let dist = |a: [f32; 2], b: [f32; 2]| {
+        let dx = (a[0] - b[0]) * w as f32 / short;
+        let dy = (a[1] - b[1]) * h as f32 / short;
+        (dx * dx + dy * dy).sqrt()
+    };
+
+    let mut best: Option<([f32; 2], f32)> = None;
+    for &d in &CANDIDATE_DISTANCES {
+        for k in 0..CANDIDATE_ANGLES {
+            let a = k as f32 / CANDIDATE_ANGLES as f32 * std::f32::consts::TAU;
+            let c = [target[0] + a.cos() * rx * d, target[1] + a.sin() * ry * d];
+            // The candidate's ring must be on the image to be compared.
+            if clamp_center(c, ring_radius, aspect) != c {
+                continue;
+            }
+            if avoid.iter().any(|s| dist(c, s.target) < radius + s.radius) {
+                continue;
+            }
+            let score: f32 = target_ring
+                .iter()
+                .zip(&ring_offsets)
+                .filter_map(|(t, o)| {
+                    let t = (*t)?;
+                    let s = sample([c[0] + o[0], c[1] + o[1]])?;
+                    Some((0..3).map(|i| (t[i] - s[i]).powi(2)).sum::<f32>())
+                })
+                .sum();
+            if best.is_none_or(|(_, b)| score < b) {
+                best = Some((c, score));
+            }
+        }
+    }
+    best.map(|(c, _)| clamp_center(c, radius, aspect))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,6 +252,58 @@ mod tests {
         let out = apply_rgba(&img, &spots);
         assert_eq!(out.get_pixel(10, 10).0, [255, 255, 255, 255]);
         assert_eq!(out.get_pixel(30, 10).0, [0, 0, 0, 255]);
+    }
+
+    /// Red image with a blue rectangle; the target sits inside the blue near
+    /// its right edge, so most nearby candidates have red in their ring.
+    fn blue_patch_image() -> RgbaImage {
+        RgbaImage::from_fn(200, 200, |x, y| {
+            let (u, v) = (x as f32 / 200.0, y as f32 / 200.0);
+            if (0.1..0.6).contains(&u) && (0.3..0.7).contains(&v) {
+                Rgba([30, 60, 200, 255])
+            } else {
+                Rgba([200, 40, 30, 255])
+            }
+        })
+    }
+
+    #[test]
+    fn find_source_picks_matching_surroundings() {
+        let img = blue_patch_image();
+        let (target, r) = ([0.5, 0.5], 0.04);
+        let src = find_source(&img, target, r, &[]).expect("a source fits");
+        let ring = r * RING_SCALE;
+        assert!(
+            src[0] - ring >= 0.1 && src[0] + ring <= 0.6 && src[1] - ring >= 0.3 && src[1] + ring <= 0.7,
+            "source ring must lie in the blue patch: {src:?}"
+        );
+    }
+
+    #[test]
+    fn find_source_avoids_other_spots_targets() {
+        let img = blue_patch_image();
+        let (target, r) = ([0.5, 0.5], 0.04);
+        let first = find_source(&img, target, r, &[]).unwrap();
+        // Mark the best match as a blemish: the pick must move off it.
+        let blemish = spot(first, [0.9, 0.9], r, 0.5);
+        let second = find_source(&img, target, r, &[blemish.clone()]).unwrap();
+        let d = ((second[0] - first[0]).powi(2) + (second[1] - first[1]).powi(2)).sqrt();
+        assert!(d >= 2.0 * r - 1e-4, "overlaps the other spot's target: {second:?}");
+    }
+
+    #[test]
+    fn find_source_keeps_the_source_inside_the_image() {
+        let img = RgbaImage::from_pixel(300, 200, Rgba([120, 120, 120, 255]));
+        let r = 0.05;
+        let src = find_source(&img, [0.02, 0.03], r, &[]).expect("a source fits");
+        let [rx, ry] = spot_radius_xy(r, 1.5);
+        assert!(src[0] >= rx && src[0] <= 1.0 - rx && src[1] >= ry && src[1] <= 1.0 - ry);
+    }
+
+    #[test]
+    fn find_source_gives_up_when_nothing_fits() {
+        let img = RgbaImage::from_pixel(100, 100, Rgba([0, 0, 0, 255]));
+        assert_eq!(find_source(&img, [0.5, 0.5], 0.3, &[]), None);
     }
 
     #[test]
