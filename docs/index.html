@@ -43,9 +43,9 @@
 
       <h2>Download</h2>
 
-      <p>Available as a <code>.deb</code> for Ubuntu and Debian-based distributions.</p>
+      <p>Available as a <code>.deb</code> for Ubuntu and Debian-based distributions (x86-64).</p>
       <p>
-        <a href="https://github.com/divanvisagie/Photograph/releases/latest" style="
+        <a href="https://github.com/divanvisagie/Photograph/releases/latest/download/photograph_amd64.deb" style="
           display: inline-block;
           font-weight: bold;
           letter-spacing: 0.06em;
@@ -58,7 +58,13 @@
           color: #ffffff;
         ">Download .deb</a>
       </p>
-<pre><code>sudo apt install ./photograph_*_amd64.deb</code></pre>
+<p>Or from a terminal:</p>
+<pre><code>wget https://github.com/divanvisagie/Photograph/releases/latest/download/photograph_amd64.deb
+sudo apt install ./photograph_amd64.deb</code></pre>
+      <p>
+        Older versions and release notes are on the
+        <a href="https://github.com/divanvisagie/Photograph/releases">releases page</a>.
+      </p>
       <p style="font-size: 13px; color: var(--muted-color, #2f2925);">
         Requires a Vulkan-capable GPU. Run <code>vulkaninfo --summary</code> to verify.
       </p>
@@ -76,7 +82,7 @@ photograph</code></pre>
       <h2>What It Does</h2>
 
       <ul>
-        <li>Folder browser with thumbnail grid</li>
+        <li>Folder browser with thumbnail grid; the sidebar finds mounted drives, ZFS pools, and network shares (NFS/SMB/sshfs)</li>
         <li>Full image viewer/editor windows (egui/eframe)</li>
         <li>EXIF metadata display</li>
         <li>Non-destructive edits stored as sidecar JSON</li>
@@ -113,8 +119,9 @@ make dev</code></pre>
         The <code>Makefile</code> builds a Linux <code>.deb</code>.
       </p>
 
-<pre><code>make build          # build .deb on Linux
-make install        # install the built .deb</code></pre>
+<pre><code>make                # list all targets
+make build          # build the .deb
+make install        # build and install the .deb</code></pre>
 
       <h2>Architecture</h2>
 

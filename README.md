@@ -39,12 +39,14 @@ Current support intent: Ubuntu Linux only (see [ADR-0012](docs/adr/0012-drop-mac
 
 ### Linux (.deb)
 
-Download the latest `.deb` from [GitHub Releases](https://github.com/divanvisagie/Photograph/releases/latest)
-and install it with apt:
+Download the latest `.deb` and install it with apt:
 
 ```bash
-sudo apt install ./photograph_*_amd64.deb
+wget https://github.com/divanvisagie/Photograph/releases/latest/download/photograph_amd64.deb
+sudo apt install ./photograph_amd64.deb
 ```
+
+Older versions and release notes are on [GitHub Releases](https://github.com/divanvisagie/Photograph/releases).
 
 Or build and install the `.deb` locally via the `Makefile` (see [Packaging](#packaging)):
 
@@ -145,8 +147,31 @@ make                # list all targets
 make build          # build the .deb
 make build-deb      # build the .deb
 make install        # build and install the .deb
-make release        # build the .deb and publish it as a GitHub release (requires gh CLI, logged in)
+make release        # tag and publish a GitHub release with the .deb (see Releasing)
 ```
+
+### Releasing
+
+Releases are cut from `master` only. The tag and the `.deb` version both come from `version` in
+`Cargo.toml`.
+
+1. Bump the version, then merge to `master` and push:
+
+   ```bash
+   make bump V=0.1.4   # updates Cargo.toml + Cargo.lock and commits
+   ```
+
+2. On `master`, with the bump pushed:
+
+   ```bash
+   make release
+   ```
+
+`make release` first runs `make release-check`. The check fails if you're not on `master`, if the
+working tree has uncommitted changes, if `HEAD` isn't the same as `origin/master`, or if the version
+is already tagged. `make release` then builds the `.deb`, creates an annotated `v<version>` tag on
+`HEAD`, pushes the tag, and publishes the GitHub release with `--verify-tag`. The release gets two copies of the `.deb`: the versioned one and an unversioned `photograph_amd64.deb`, which the "latest" download link on the README and the landing page points to. This way the release
+points at the exact commit the `.deb` was built from. It needs the `gh` CLI, logged in.
 
 Linux packaging assets live under `packaging/linux/`.
 
