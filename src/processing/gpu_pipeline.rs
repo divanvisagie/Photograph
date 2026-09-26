@@ -207,7 +207,7 @@ fn is_gpu_state_supported(_state: &EditState) -> bool {
     true
 }
 
-fn has_geometry(state: &EditState) -> bool {
+pub(crate) fn has_geometry(state: &EditState) -> bool {
     state.rotate.rem_euclid(360) != 0
         || state.flip_h
         || state.flip_v

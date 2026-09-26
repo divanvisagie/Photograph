@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use image::DynamicImage;
+use image::{DynamicImage, RgbaImage};
 
 use crate::state::{EditState, GradFilter, Rect, Spot};
 
@@ -31,6 +31,13 @@ enum BgResult {
     Processed {
         generation: u64,
         cache_key: PreviewCacheKey,
+        data: Vec<u8>,
+        width: usize,
+        height: usize,
+    },
+    /// Split view's "before" image, rendered for the state with `signature`.
+    Original {
+        signature: u64,
         data: Vec<u8>,
         width: usize,
         height: usize,
@@ -216,7 +223,14 @@ pub struct Viewer {
     last_interactive_process: Option<Instant>,
     texture: Option<egui::TextureHandle>,
     original_texture: Option<egui::TextureHandle>,
+    /// `original_signature` of the state `original_texture` was rendered for.
+    original_rendered: Option<u64>,
+    /// `original_signature` of an in-flight "before" render, if any.
+    original_in_flight: Option<u64>,
     split_view: bool,
+    /// Split view shows the "before" image as shot (uncropped, unrotated)
+    /// instead of with the edit's geometry.
+    split_original_crop: bool,
     crop_mode: bool,
     crop_aspect: CropAspect,
     /// Visual-only crop selection — not applied to processing until user confirms.
@@ -270,7 +284,10 @@ impl Viewer {
             last_interactive_process: None,
             texture: None,
             original_texture: None,
+            original_rendered: None,
+            original_in_flight: None,
             split_view: false,
+            split_original_crop: false,
             crop_mode: false,
             crop_aspect: CropAspect::Free,
             pending_crop: None,
@@ -421,6 +438,8 @@ impl Viewer {
         self.preview = None;
         self.texture = None;
         self.original_texture = None;
+        self.original_rendered = None;
+        self.original_in_flight = None;
         self.edit_state = EditState::load(&path).unwrap_or_default();
         self.needs_process = false;
         self.needs_final_process = false;
@@ -618,25 +637,97 @@ impl Viewer {
                         egui::TextureOptions::LINEAR,
                     ));
                 }
+                BgResult::Original {
+                    signature,
+                    data,
+                    width,
+                    height,
+                } => {
+                    // Drop renders for a state that's since changed.
+                    if self.original_in_flight == Some(signature) {
+                        self.original_in_flight = None;
+                        if let Some(rgba) = RgbaImage::from_raw(width as u32, height as u32, data) {
+                            self.set_original_texture(ctx, signature, rgba);
+                        }
+                    }
+                }
             }
         }
     }
 
+    /// The state split view's "before" side is rendered with: the edit's
+    /// geometry only (so both sides frame the same area and differ only in
+    /// color and retouching), or nothing when showing the original crop.
+    fn original_state(&self) -> EditState {
+        if self.split_original_crop {
+            return EditState::default();
+        }
+        let e = &self.edit_state;
+        EditState {
+            rotate: e.rotate,
+            flip_h: e.flip_h,
+            flip_v: e.flip_v,
+            crop: e.crop.clone(),
+            straighten: e.straighten,
+            keystone: e.keystone.clone(),
+            ..EditState::default()
+        }
+    }
+
+    /// Identifies a "before" render: its state plus the preview it came from
+    /// (which changes when a higher-resolution preview reloads).
+    fn original_signature(&self, preview: &DynamicImage) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        edit_state_signature(&self.original_state()).hash(&mut hasher);
+        (preview.width(), preview.height()).hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Keeps split view's "before" texture current, rendering it in the
+    /// background when its geometry changes. The previous texture stays on
+    /// screen until the new one arrives.
     fn ensure_original_texture(&mut self, ctx: &egui::Context) {
-        if self.original_texture.is_some() {
+        let Some(preview) = self.preview.clone() else {
+            return;
+        };
+        let signature = self.original_signature(&preview);
+        if self.original_rendered == Some(signature) || self.original_in_flight == Some(signature)
+        {
             return;
         }
-        if let Some(ref preview) = self.preview {
-            let rgba = preview.to_rgba8();
-            let w = rgba.width() as usize;
-            let h = rgba.height() as usize;
-            let img = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba.into_raw());
-            self.original_texture = Some(ctx.load_texture(
-                format!("viewer_orig_{}", self.id),
-                img,
-                egui::TextureOptions::LINEAR,
-            ));
+        let state = self.original_state();
+        if !crate::processing::gpu_pipeline::has_geometry(&state) {
+            // Nothing to apply (no geometry, or showing the original crop):
+            // the "before" image is the preview itself.
+            self.set_original_texture(ctx, signature, preview.to_rgba8());
+            return;
         }
+        self.original_in_flight = Some(signature);
+        let preview_backend = self.preview_backend;
+        let tx = self.tx.clone();
+        let ctx2 = ctx.clone();
+        std::thread::spawn(move || {
+            let rgba = process_preview_with_backend(&preview, &state, preview_backend).to_rgba8();
+            let (width, height) = (rgba.width() as usize, rgba.height() as usize);
+            let _ = tx.send(BgResult::Original {
+                signature,
+                data: rgba.into_raw(),
+                width,
+                height,
+            });
+            ctx2.request_repaint();
+        });
+    }
+
+    fn set_original_texture(&mut self, ctx: &egui::Context, signature: u64, rgba: RgbaImage) {
+        let size = [rgba.width() as usize, rgba.height() as usize];
+        let img = egui::ColorImage::from_rgba_unmultiplied(size, &rgba.into_raw());
+        self.original_texture = Some(ctx.load_texture(
+            format!("viewer_orig_{}", self.id),
+            img,
+            egui::TextureOptions::LINEAR,
+        ));
+        self.original_rendered = Some(signature);
     }
 
     /// The selected aspect ratio in crop-rect units, ready for
@@ -758,6 +849,12 @@ impl Viewer {
             ui.horizontal(|ui| {
                 if ui.selectable_label(self.split_view, "Split view").clicked() {
                     self.split_view = !self.split_view;
+                }
+                if self.split_view {
+                    ui.checkbox(&mut self.split_original_crop, "Show original crop")
+                        .on_hover_text(
+                            "Show the before image as shot, without the edit's crop and rotation",
+                        );
                 }
                 if ui.selectable_label(self.crop_mode, "Crop").clicked() {
                     self.set_spot_mode(false);
@@ -2991,6 +3088,50 @@ mod tests {
         assert_eq!(r.exposure, 0.7, "color edits stay on while placing spots");
         assert!(v.needs_process);
         assert_eq!(v.edit_state.straighten, 3.0, "saved geometry is untouched");
+    }
+
+    #[test]
+    fn split_before_side_keeps_geometry_but_drops_other_edits_by_default() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.edit_state.rotate = 90;
+        v.edit_state.straighten = 2.0;
+        v.edit_state.crop = Some(crop(0.1, 0.1, 0.5, 0.5));
+        v.edit_state.exposure = 0.8;
+        v.edit_state.spots.push(crate::state::Spot::new([0.5, 0.5], 0.05, 1.0));
+
+        let before = v.original_state();
+        assert_eq!((before.rotate, before.straighten), (90, 2.0));
+        assert!(before.crop.is_some());
+        assert_eq!(before.exposure, 0.0);
+        assert!(before.spots.is_empty(), "retouching is part of the edit, not the before");
+    }
+
+    #[test]
+    fn show_original_crop_renders_the_before_side_as_shot() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.edit_state.rotate = 90;
+        v.edit_state.crop = Some(crop(0.1, 0.1, 0.5, 0.5));
+        v.split_original_crop = true;
+        let before = v.original_state();
+        assert_eq!(before.rotate, 0);
+        assert!(before.crop.is_none());
+    }
+
+    #[test]
+    fn before_side_rerenders_when_geometry_changes_but_not_color() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        let preview = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(8, 6, Rgba([1, 2, 3, 255])));
+        let base = v.original_signature(&preview);
+        v.edit_state.exposure = 1.0;
+        assert_eq!(v.original_signature(&preview), base, "color edits don't touch the before side");
+        v.edit_state.crop = Some(crop(0.0, 0.0, 0.5, 0.5));
+        assert_ne!(v.original_signature(&preview), base);
+        let bigger = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(16, 12, Rgba([1, 2, 3, 255])));
+        assert_ne!(
+            v.original_signature(&bigger),
+            v.original_signature(&preview),
+            "a reloaded higher-res preview needs a new before render"
+        );
     }
 
     #[test]
