@@ -133,14 +133,25 @@ enum CropAspect {
 }
 
 impl CropAspect {
-    fn ratio(self) -> Option<f32> {
+    /// Target width/height in pixels; `Original` is the image's own aspect.
+    fn pixel_ratio(self, image_aspect: f32) -> Option<f32> {
         match self {
             CropAspect::Free => None,
             CropAspect::Square => Some(1.0),
             CropAspect::Photo4x3 => Some(4.0 / 3.0),
             CropAspect::Wide16x9 => Some(16.0 / 9.0),
-            CropAspect::Original => None, // caller uses image aspect
+            CropAspect::Original => Some(image_aspect),
         }
+    }
+
+    /// The ratio in crop-rect units. Crop rects are fractions of the
+    /// (rotated) image's width and height, so a pixel ratio `r` on an image
+    /// of aspect `a` is `r / a` there — e.g. 1:1 on a 3:2 photo is a rect
+    /// 2/3 as wide (as a fraction) as it is tall. `None` for Free, or when
+    /// the image's aspect isn't known yet.
+    fn normalized_ratio(self, image_aspect: Option<f32>) -> Option<f32> {
+        let image_aspect = image_aspect.filter(|a| a.is_finite() && *a > 0.0)?;
+        self.pixel_ratio(image_aspect).map(|r| r / image_aspect)
     }
 
     fn label(self) -> &'static str {
@@ -194,7 +205,8 @@ pub struct Viewer {
     crop_drag: Option<DragTarget>,
     /// Normalized drag start position (for interior moves).
     crop_drag_start_pos: Option<egui::Pos2>,
-    /// Pending crop rect snapshot at drag start (for interior moves).
+    /// Pending crop rect snapshot at drag start (interior moves offset from
+    /// it; corner drags anchor on it).
     crop_drag_start_rect: Option<Rect>,
     /// Normalized position where the initial drag began (for creating new rects).
     crop_create_origin: Option<egui::Pos2>,
@@ -522,17 +534,21 @@ impl Viewer {
         }
     }
 
+    /// The selected aspect ratio in crop-rect units, ready for
+    /// `constrain_aspect` / `resize_from_corner` / `resize_from_edge`.
     fn effective_crop_ratio(&self) -> Option<f32> {
-        match self.crop_aspect {
-            CropAspect::Original => {
-                if let Some(ref preview) = self.preview {
-                    Some(preview.width() as f32 / preview.height() as f32)
-                } else {
-                    None
-                }
-            }
-            other => other.ratio(),
-        }
+        self.crop_aspect.normalized_ratio(self.crop_image_aspect())
+    }
+
+    /// Width/height of the image crop rects are relative to: the source
+    /// after rotation (crop is applied post-rotation).
+    fn crop_image_aspect(&self) -> Option<f32> {
+        let preview = self.preview.as_ref()?;
+        let (w, h) = (preview.width() as f32, preview.height() as f32);
+        Some(match self.edit_state.rotate.rem_euclid(360) {
+            90 | 270 => h / w,
+            _ => w / h,
+        })
     }
 
     /// Renders the image viewport and kicks off preview processing when needed.
@@ -968,10 +984,8 @@ impl Viewer {
                                 self.pending_crop = self.edit_state.crop.clone();
                             }
                             self.crop_drag = Some(t);
-                            if matches!(t, DragTarget::Interior) {
-                                self.crop_drag_start_pos = Some(screen_to_norm_pos(pos, img_rect));
-                                self.crop_drag_start_rect = self.pending_crop.clone();
-                            }
+                            self.crop_drag_start_pos = Some(screen_to_norm_pos(pos, img_rect));
+                            self.crop_drag_start_rect = self.pending_crop.clone();
                         }
                     }
                 }
@@ -987,8 +1001,16 @@ impl Viewer {
 
                         match drag {
                             DragTarget::Corner(idx) => {
-                                if let Some(ref mut pc) = self.pending_crop {
-                                    resize_from_corner(pc, idx, nx, ny, aspect_ratio);
+                                // Resize from the drag-start rect so the anchor
+                                // stays put even after the crop flips past it.
+                                if let (Some(start_rect), Some(pc)) =
+                                    (&self.crop_drag_start_rect, &mut self.pending_crop)
+                                {
+                                    if let Some(resized) =
+                                        resize_from_corner(start_rect, idx, nx, ny, aspect_ratio)
+                                    {
+                                        *pc = resized;
+                                    }
                                 }
                             }
                             DragTarget::Edge(idx) => {
@@ -1038,17 +1060,8 @@ impl Viewer {
                 {
                     if let Some(ref mut crop) = self.pending_crop {
                         let n = screen_to_norm_pos(pos, img_rect);
-                        let nx = n.x.clamp(0.0, 1.0);
-                        let ny = n.y.clamp(0.0, 1.0);
-                        let new_x = origin.x.min(nx);
-                        let new_y = origin.y.min(ny);
-                        crop.x = new_x;
-                        crop.y = new_y;
-                        crop.width = (origin.x.max(nx) - new_x).min(1.0 - new_x);
-                        crop.height = (origin.y.max(ny) - new_y).min(1.0 - new_y);
-                        if let Some(ratio) = aspect_ratio {
-                            constrain_aspect(crop, Some(ratio));
-                        }
+                        let pointer = (n.x.clamp(0.0, 1.0), n.y.clamp(0.0, 1.0));
+                        *crop = anchored_rect((origin.x, origin.y), pointer, aspect_ratio);
                     }
                 }
             }
@@ -1365,39 +1378,60 @@ fn handle_rects(crop_screen: egui::Rect) -> [(DragTarget, egui::Rect); 8] {
 // Crop geometry
 // ---------------------------------------------------------------------------
 
-fn resize_from_corner(crop: &mut Rect, corner: u8, nx: f32, ny: f32, aspect: Option<f32>) {
-    let (x1, y1, x2, y2) = (crop.x, crop.y, crop.x + crop.width, crop.y + crop.height);
-    let (mut new_x1, mut new_y1, mut new_x2, mut new_y2) = match corner {
-        0 => (nx, ny, x2, y2), // TL
-        1 => (x1, ny, nx, y2), // TR
-        2 => (x1, y1, nx, ny), // BR
-        3 => (nx, y1, x2, ny), // BL
-        _ => return,
+/// `start` with one corner dragged to the pointer and the opposite corner
+/// anchored, or `None` if that would collapse the crop below minimum size.
+fn resize_from_corner(
+    start: &Rect,
+    corner: u8,
+    nx: f32,
+    ny: f32,
+    aspect: Option<f32>,
+) -> Option<Rect> {
+    let (x1, y1, x2, y2) = (start.x, start.y, start.x + start.width, start.y + start.height);
+    let anchor = match corner {
+        0 => (x2, y2), // TL drags, BR anchored
+        1 => (x1, y2), // TR drags, BL anchored
+        2 => (x1, y1), // BR drags, TL anchored
+        3 => (x2, y1), // BL drags, TR anchored
+        _ => return None,
     };
+    let resized = anchored_rect(anchor, (nx, ny), aspect);
+    (resized.width >= 0.01 && resized.height >= 0.01).then_some(resized)
+}
 
-    if (new_x2 - new_x1).abs() < 0.01 || (new_y2 - new_y1).abs() < 0.01 {
-        return;
-    }
-
-    if new_x1 > new_x2 {
-        std::mem::swap(&mut new_x1, &mut new_x2);
-    }
-    if new_y1 > new_y2 {
-        std::mem::swap(&mut new_y1, &mut new_y2);
-    }
-
-    new_x1 = new_x1.clamp(0.0, 1.0);
-    new_y1 = new_y1.clamp(0.0, 1.0);
-    new_x2 = new_x2.clamp(0.0, 1.0);
-    new_y2 = new_y2.clamp(0.0, 1.0);
-
-    crop.x = new_x1;
-    crop.y = new_y1;
-    crop.width = new_x2 - new_x1;
-    crop.height = new_y2 - new_y1;
+/// The rect spanning `anchor` to `pointer`, clamped to the image. With a
+/// ratio (in crop-rect units) the rect grows to reach the pointer along
+/// whichever axis it's further out on, then shrinks as a whole if that
+/// overflows the image — the anchor never moves. Crossing the anchor flips
+/// the rect to the other side, like dragging past the opposite corner.
+fn anchored_rect(anchor: (f32, f32), pointer: (f32, f32), aspect: Option<f32>) -> Rect {
+    let (ax, ay) = anchor;
+    let (dx, dy) = (pointer.0 - ax, pointer.1 - ay);
+    let room_w = if dx < 0.0 { ax } else { 1.0 - ax };
+    let room_h = if dy < 0.0 { ay } else { 1.0 - ay };
+    let (mut w, mut h) = (dx.abs().min(room_w), dy.abs().min(room_h));
 
     if let Some(ratio) = aspect {
-        constrain_aspect(crop, Some(ratio));
+        if w > h * ratio {
+            h = w / ratio;
+        } else {
+            w = h * ratio;
+        }
+        if w > room_w {
+            w = room_w;
+            h = w / ratio;
+        }
+        if h > room_h {
+            h = room_h;
+            w = h * ratio;
+        }
+    }
+
+    Rect {
+        x: if dx < 0.0 { ax - w } else { ax },
+        y: if dy < 0.0 { ay - h } else { ay },
+        width: w,
+        height: h,
     }
 }
 
@@ -1448,6 +1482,8 @@ fn resize_from_edge(crop: &mut Rect, edge: u8, nx: f32, ny: f32, aspect: Option<
     crop.height = y2 - y1;
 }
 
+/// Shrinks `crop` around its center to `ratio`, given in crop-rect units
+/// (see `CropAspect::normalized_ratio`), not pixels.
 fn constrain_aspect(crop: &mut Rect, ratio: Option<f32>) {
     let Some(ratio) = ratio else { return };
     if crop.height < 0.001 {
@@ -2275,9 +2311,10 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        DragTarget, HANDLE_SIZE, INTERACTIVE_PREVIEW_MAX, PreviewBackend,
+        CropAspect, DragTarget, HANDLE_SIZE, INTERACTIVE_PREVIEW_MAX, PreviewBackend,
         bump_requested_generation_for_pending_changes, crop_hit_target, downscale_for_interactive,
-        edit_state_signature, load_preview_stages_with_hooks, resize_from_edge,
+        anchored_rect, constrain_aspect, edit_state_signature, load_preview_stages_with_hooks,
+        resize_from_corner, resize_from_edge,
         process_preview_with_backend_and_gpu_hook, source_signature,
     };
     use crate::state::EditState;
@@ -2302,6 +2339,97 @@ mod tests {
             Some(DragTarget::Interior)
         ));
         assert!(crop_hit_target(img.left_top() - egui::vec2(20.0, 20.0), img).is_none());
+    }
+
+    /// Pixel aspect of a normalized crop on an image of the given aspect.
+    fn pixel_aspect(c: &crate::state::Rect, image_aspect: f32) -> f32 {
+        c.width / c.height * image_aspect
+    }
+
+    #[test]
+    fn aspect_presets_produce_their_pixel_ratio_on_a_3x2_image() {
+        let image = 1.5;
+        for (aspect, want) in [
+            (CropAspect::Square, 1.0),
+            (CropAspect::Photo4x3, 4.0 / 3.0),
+            (CropAspect::Wide16x9, 16.0 / 9.0),
+            (CropAspect::Original, 1.5),
+        ] {
+            let mut c = crop(0.0, 0.0, 1.0, 1.0);
+            constrain_aspect(&mut c, aspect.normalized_ratio(Some(image)));
+            let got = pixel_aspect(&c, image);
+            assert!((got - want).abs() < 1e-4, "{}: got {got}, want {want}", aspect.label());
+            assert!(c.width <= 1.0 && c.height <= 1.0);
+        }
+    }
+
+    #[test]
+    fn original_keeps_full_image_crop_untouched() {
+        let mut c = crop(0.0, 0.0, 1.0, 1.0);
+        constrain_aspect(&mut c, CropAspect::Original.normalized_ratio(Some(1.5)));
+        assert_crop(&c, 0.0, 0.0, 1.0, 1.0);
+    }
+
+    #[test]
+    fn square_on_portrait_image_trims_height() {
+        // 2:3 portrait: a square spans the full width and 2/3 of the height.
+        let mut c = crop(0.0, 0.0, 1.0, 1.0);
+        constrain_aspect(&mut c, CropAspect::Square.normalized_ratio(Some(2.0 / 3.0)));
+        assert_crop(&c, 0.0, 1.0 / 6.0, 1.0, 2.0 / 3.0);
+    }
+
+    #[test]
+    fn free_or_unknown_image_aspect_means_unconstrained() {
+        assert_eq!(CropAspect::Free.normalized_ratio(Some(1.5)), None);
+        assert_eq!(CropAspect::Square.normalized_ratio(None), None);
+    }
+
+    #[test]
+    fn locked_corner_drag_keeps_opposite_corner_fixed() {
+        let ratio = CropAspect::Square.normalized_ratio(Some(1.5));
+        for corner in 0..4u8 {
+            let mut c = crop(0.2, 0.2, 0.4, 0.6);
+            constrain_aspect(&mut c, ratio);
+            let (x1, y1, x2, y2) = (c.x, c.y, c.x + c.width, c.y + c.height);
+            let (anchor, pointer) = match corner {
+                0 => ((x2, y2), (0.1, 0.3)),
+                1 => ((x1, y2), (0.9, 0.3)),
+                2 => ((x1, y1), (0.5, 0.9)),
+                _ => ((x2, y1), (0.1, 0.9)),
+            };
+            let c = resize_from_corner(&c, corner, pointer.0, pointer.1, ratio).unwrap();
+            let corners = [
+                (c.x, c.y),
+                (c.x + c.width, c.y),
+                (c.x, c.y + c.height),
+                (c.x + c.width, c.y + c.height),
+            ];
+            assert!(
+                corners
+                    .iter()
+                    .any(|p| (p.0 - anchor.0).abs() < 1e-5 && (p.1 - anchor.1).abs() < 1e-5),
+                "corner {corner}: anchor {anchor:?} moved, got {:?}",
+                (c.x, c.y, c.width, c.height)
+            );
+            assert!((pixel_aspect(&c, 1.5) - 1.0).abs() < 1e-4, "corner {corner} lost 1:1");
+        }
+    }
+
+    #[test]
+    fn locked_corner_drag_shrinks_to_fit_image_without_moving_anchor() {
+        // 1:1 on a 3:2 image is 2/3 in crop units. Anchored at the top-left,
+        // dragging to the far bottom-right is limited by height.
+        let r = anchored_rect((0.0, 0.0), (1.0, 1.0), Some(2.0 / 3.0));
+        assert_crop(&r, 0.0, 0.0, 2.0 / 3.0, 1.0);
+    }
+
+    #[test]
+    fn free_corner_drag_follows_pointer_and_flips_past_anchor() {
+        let start = crop(0.2, 0.2, 0.4, 0.4);
+        let c = resize_from_corner(&start, 2, 0.1, 0.1, None).unwrap(); // BR past TL anchor
+        assert_crop(&c, 0.1, 0.1, 0.1, 0.1);
+        // Onto the anchor itself: too small, so the caller keeps the last rect.
+        assert!(resize_from_corner(&start, 2, 0.2, 0.2, None).is_none());
     }
 
     #[test]
