@@ -165,7 +165,10 @@ impl CropAspect {
 /// Which part of the crop rect is being dragged.
 #[derive(Clone, Copy, PartialEq)]
 enum DragTarget {
+    /// 0 = TL, 1 = TR, 2 = BR, 3 = BL.
     Corner(u8),
+    /// Midpoint handle that moves one edge: 0 = top, 1 = right, 2 = bottom, 3 = left.
+    Edge(u8),
     Interior,
 }
 
@@ -926,15 +929,15 @@ impl Viewer {
 
         if let Some(crop) = visible_crop {
             let crop_screen = norm_to_screen(&crop, img_rect);
-            // Corner handles straddle the crop edge, so when the crop touches
-            // the image edge half of each handle lies outside the image. Give
-            // each corner its own interaction area so those halves still count
-            // as hovering this viewer.
+            // Handles straddle the crop edge, so when the crop touches the
+            // image edge half of each handle lies outside the image. Give each
+            // handle its own interaction area so those halves still count as
+            // hovering this viewer.
             let mut is_this_viewer = is_this_viewer;
-            for (i, r) in corner_rects(crop_screen).into_iter().enumerate() {
+            for (i, (_, r)) in handle_rects(crop_screen).into_iter().enumerate() {
                 let resp = ui.interact(
                     r,
-                    ui.id().with(("crop_corner", i)),
+                    ui.id().with(("crop_handle", i)),
                     egui::Sense::click_and_drag(),
                 );
                 is_this_viewer |= resp.hovered() || resp.dragged();
@@ -986,6 +989,11 @@ impl Viewer {
                             DragTarget::Corner(idx) => {
                                 if let Some(ref mut pc) = self.pending_crop {
                                     resize_from_corner(pc, idx, nx, ny, aspect_ratio);
+                                }
+                            }
+                            DragTarget::Edge(idx) => {
+                                if let Some(ref mut pc) = self.pending_crop {
+                                    resize_from_edge(pc, idx, nx, ny, aspect_ratio);
                                 }
                             }
                             DragTarget::Interior => {
@@ -1308,12 +1316,13 @@ fn screen_to_norm_pos(pos: egui::Pos2, img_rect: egui::Rect) -> egui::Pos2 {
 }
 
 /// Which part of the crop rect, if any, a drag starting at `pos` would grab.
-/// Corners win over the interior.
+/// Corners win over edge handles (they overlap on small crops), and both win
+/// over the interior.
 fn crop_hit_target(pos: egui::Pos2, crop_screen: egui::Rect) -> Option<DragTarget> {
-    corner_rects(crop_screen)
-        .iter()
-        .position(|r| r.contains(pos))
-        .map(|i| DragTarget::Corner(i as u8))
+    handle_rects(crop_screen)
+        .into_iter()
+        .find(|(_, r)| r.contains(pos))
+        .map(|(t, _)| t)
         .or_else(|| crop_screen.contains(pos).then_some(DragTarget::Interior))
 }
 
@@ -1322,22 +1331,34 @@ fn crop_cursor(target: DragTarget, dragging: bool) -> egui::CursorIcon {
         // TL/BR resize along one diagonal, TR/BL along the other
         DragTarget::Corner(0 | 2) => egui::CursorIcon::ResizeNwSe,
         DragTarget::Corner(_) => egui::CursorIcon::ResizeNeSw,
+        DragTarget::Edge(0 | 2) => egui::CursorIcon::ResizeVertical,
+        DragTarget::Edge(_) => egui::CursorIcon::ResizeHorizontal,
         DragTarget::Interior if dragging => egui::CursorIcon::Grabbing,
         DragTarget::Interior => egui::CursorIcon::Grab,
     }
 }
 
-/// Hit areas for the four crop corners (TL, TR, BR, BL), centered on each
-/// corner — so they reach outside the image when the crop touches its edge.
-fn corner_rects(crop_screen: egui::Rect) -> [egui::Rect; 4] {
-    let hs = HANDLE_SIZE;
-    let corners = [
-        crop_screen.left_top(),
-        crop_screen.right_top(),
-        crop_screen.right_bottom(),
-        crop_screen.left_bottom(),
-    ];
-    corners.map(|c| egui::Rect::from_center_size(c, egui::vec2(hs * 3.0, hs * 3.0)))
+/// Anchor points of the eight crop handles: corners first (TL, TR, BR, BL),
+/// then edge midpoints (top, right, bottom, left).
+fn handle_points(crop_screen: egui::Rect) -> [(DragTarget, egui::Pos2); 8] {
+    let c = crop_screen.center();
+    [
+        (DragTarget::Corner(0), crop_screen.left_top()),
+        (DragTarget::Corner(1), crop_screen.right_top()),
+        (DragTarget::Corner(2), crop_screen.right_bottom()),
+        (DragTarget::Corner(3), crop_screen.left_bottom()),
+        (DragTarget::Edge(0), egui::pos2(c.x, crop_screen.top())),
+        (DragTarget::Edge(1), egui::pos2(crop_screen.right(), c.y)),
+        (DragTarget::Edge(2), egui::pos2(c.x, crop_screen.bottom())),
+        (DragTarget::Edge(3), egui::pos2(crop_screen.left(), c.y)),
+    ]
+}
+
+/// Hit areas for the eight crop handles, centered on each anchor — so they
+/// reach outside the image when the crop touches its edge.
+fn handle_rects(crop_screen: egui::Rect) -> [(DragTarget, egui::Rect); 8] {
+    let size = egui::vec2(HANDLE_SIZE * 3.0, HANDLE_SIZE * 3.0);
+    handle_points(crop_screen).map(|(t, p)| (t, egui::Rect::from_center_size(p, size)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1378,6 +1399,53 @@ fn resize_from_corner(crop: &mut Rect, corner: u8, nx: f32, ny: f32, aspect: Opt
     if let Some(ratio) = aspect {
         constrain_aspect(crop, Some(ratio));
     }
+}
+
+/// Moves one edge of the crop to the pointer. With a fixed aspect ratio the
+/// perpendicular dimension follows, staying centered on its axis; if that
+/// would overflow the image, the dragged edge stops where it still fits.
+fn resize_from_edge(crop: &mut Rect, edge: u8, nx: f32, ny: f32, aspect: Option<f32>) {
+    const MIN: f32 = 0.01;
+    let (mut x1, mut y1, mut x2, mut y2) =
+        (crop.x, crop.y, crop.x + crop.width, crop.y + crop.height);
+    match edge {
+        0 => y1 = ny.clamp(0.0, y2 - MIN),
+        1 => x2 = nx.clamp(x1 + MIN, 1.0),
+        2 => y2 = ny.clamp(y1 + MIN, 1.0),
+        3 => x1 = nx.clamp(0.0, x2 - MIN),
+        _ => return,
+    }
+
+    if let Some(ratio) = aspect {
+        if edge % 2 == 0 {
+            // Height was dragged; width follows.
+            let mut w = (y2 - y1) * ratio;
+            if w > 1.0 {
+                w = 1.0;
+                let h = w / ratio;
+                if edge == 0 { y1 = y2 - h } else { y2 = y1 + h }
+            }
+            let cx = (x1 + x2) / 2.0;
+            x1 = (cx - w / 2.0).clamp(0.0, 1.0 - w);
+            x2 = x1 + w;
+        } else {
+            // Width was dragged; height follows.
+            let mut h = (x2 - x1) / ratio;
+            if h > 1.0 {
+                h = 1.0;
+                let w = h * ratio;
+                if edge == 3 { x1 = x2 - w } else { x2 = x1 + w }
+            }
+            let cy = (y1 + y2) / 2.0;
+            y1 = (cy - h / 2.0).clamp(0.0, 1.0 - h);
+            y2 = y1 + h;
+        }
+    }
+
+    crop.x = x1;
+    crop.y = y1;
+    crop.width = x2 - x1;
+    crop.height = y2 - y1;
 }
 
 fn constrain_aspect(crop: &mut Rect, ratio: Option<f32>) {
@@ -1527,6 +1595,28 @@ fn draw_crop_overlay(
         for c in &corners {
             painter.rect_filled(
                 egui::Rect::from_center_size(*c, egui::vec2(hs, hs)),
+                0.0,
+                egui::Color32::WHITE,
+            );
+        }
+
+        // Edge handles: bars along the edge, so they read as one-axis resizes
+        let (long, short) = (hs * 2.0, hs * 0.6);
+        let c = crop_screen.center();
+        for (p, size) in [
+            (egui::pos2(c.x, crop_screen.top()), egui::vec2(long, short)),
+            (
+                egui::pos2(crop_screen.right(), c.y),
+                egui::vec2(short, long),
+            ),
+            (
+                egui::pos2(c.x, crop_screen.bottom()),
+                egui::vec2(long, short),
+            ),
+            (egui::pos2(crop_screen.left(), c.y), egui::vec2(short, long)),
+        ] {
+            painter.rect_filled(
+                egui::Rect::from_center_size(p, size),
                 0.0,
                 egui::Color32::WHITE,
             );
@@ -2186,8 +2276,8 @@ mod tests {
 
     use super::{
         DragTarget, HANDLE_SIZE, INTERACTIVE_PREVIEW_MAX, PreviewBackend,
-        bump_requested_generation_for_pending_changes, crop_hit_target,
-        downscale_for_interactive, edit_state_signature, load_preview_stages_with_hooks,
+        bump_requested_generation_for_pending_changes, crop_hit_target, downscale_for_interactive,
+        edit_state_signature, load_preview_stages_with_hooks, resize_from_edge,
         process_preview_with_backend_and_gpu_hook, source_signature,
     };
     use crate::state::EditState;
@@ -2212,6 +2302,90 @@ mod tests {
             Some(DragTarget::Interior)
         ));
         assert!(crop_hit_target(img.left_top() - egui::vec2(20.0, 20.0), img).is_none());
+    }
+
+    #[test]
+    fn edge_midpoints_hit_edge_handles_with_corners_taking_priority() {
+        let img = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 300.0));
+        let c = img.center();
+        let cases = [
+            (egui::pos2(c.x, img.top() - 4.0), 0),
+            (egui::pos2(img.right() + 4.0, c.y), 1),
+            (egui::pos2(c.x, img.bottom() - 4.0), 2),
+            (egui::pos2(img.left() + 4.0, c.y), 3),
+        ];
+        for (pos, edge) in cases {
+            assert!(matches!(
+                crop_hit_target(pos, img),
+                Some(DragTarget::Edge(e)) if e == edge
+            ));
+        }
+        // On a crop too small to separate them, the corner wins.
+        let tiny = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(10.0, 10.0));
+        assert!(matches!(
+            crop_hit_target(tiny.left_top(), tiny),
+            Some(DragTarget::Corner(0))
+        ));
+    }
+
+    fn crop(x: f32, y: f32, width: f32, height: f32) -> crate::state::Rect {
+        crate::state::Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn assert_crop(c: &crate::state::Rect, x: f32, y: f32, w: f32, h: f32) {
+        let eps = 1e-5;
+        assert!(
+            (c.x - x).abs() < eps
+                && (c.y - y).abs() < eps
+                && (c.width - w).abs() < eps
+                && (c.height - h).abs() < eps,
+            "got ({}, {}, {}, {}), want ({x}, {y}, {w}, {h})",
+            c.x,
+            c.y,
+            c.width,
+            c.height
+        );
+    }
+
+    #[test]
+    fn free_edge_drag_moves_only_that_edge() {
+        let mut c = crop(0.0, 0.0, 1.0, 1.0);
+        resize_from_edge(&mut c, 0, 0.9, 0.2, None); // top: x ignored
+        assert_crop(&c, 0.0, 0.2, 1.0, 0.8);
+        resize_from_edge(&mut c, 1, 0.7, 0.9, None); // right: y ignored
+        assert_crop(&c, 0.0, 0.2, 0.7, 0.8);
+        resize_from_edge(&mut c, 3, 0.1, 0.5, None); // left
+        assert_crop(&c, 0.1, 0.2, 0.6, 0.8);
+        resize_from_edge(&mut c, 2, 0.5, 0.6, None); // bottom
+        assert_crop(&c, 0.1, 0.2, 0.6, 0.4);
+    }
+
+    #[test]
+    fn edge_drag_cannot_cross_the_opposite_edge() {
+        let mut c = crop(0.2, 0.2, 0.5, 0.5);
+        resize_from_edge(&mut c, 3, 0.95, 0.5, None); // left dragged past right
+        assert!(c.width >= 0.01 - 1e-6);
+        assert!((c.x + c.width - 0.7).abs() < 1e-5, "right edge must stay put");
+    }
+
+    #[test]
+    fn locked_edge_drag_scales_other_axis_around_its_center() {
+        let mut c = crop(0.2, 0.2, 0.4, 0.4);
+        resize_from_edge(&mut c, 2, 0.5, 0.5, Some(1.0)); // bottom up: h 0.3
+        assert_crop(&c, 0.25, 0.2, 0.3, 0.3);
+    }
+
+    #[test]
+    fn locked_edge_drag_stops_when_other_axis_hits_image_bounds() {
+        let mut c = crop(0.0, 0.0, 1.0, 0.5);
+        // Ratio 2: dragging the bottom edge down would need width > 1.
+        resize_from_edge(&mut c, 2, 0.5, 0.9, Some(2.0));
+        assert_crop(&c, 0.0, 0.0, 1.0, 0.5);
     }
 
     #[test]
