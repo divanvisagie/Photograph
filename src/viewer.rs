@@ -9,7 +9,7 @@ use std::{
 
 use image::DynamicImage;
 
-use crate::state::{EditState, GradFilter, Rect};
+use crate::state::{EditState, GradFilter, Rect, Spot};
 
 /// Downscale loaded images to this longest-edge size for the preview.
 const PREVIEW_MAX: u32 = 1920;
@@ -183,6 +183,26 @@ enum DragTarget {
     Interior,
 }
 
+/// Which circle of a spot is being dragged.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SpotHandle {
+    Target,
+    Source,
+}
+
+/// An in-progress drag of one spot circle.
+#[derive(Clone, Copy, Debug)]
+struct SpotDrag {
+    index: usize,
+    handle: SpotHandle,
+    /// Pointer minus circle center at grab time, normalized, so the circle
+    /// doesn't jump to center on the pointer.
+    grab_offset: [f32; 2],
+}
+
+/// Default radius for new spots, as a fraction of the image's shorter side.
+const DEFAULT_SPOT_SIZE: f32 = 0.02;
+
 /// Image viewer/editor window state, including async preview processing.
 pub struct Viewer {
     id: usize,
@@ -210,6 +230,12 @@ pub struct Viewer {
     crop_drag_start_rect: Option<Rect>,
     /// Normalized position where the initial drag began (for creating new rects).
     crop_create_origin: Option<egui::Pos2>,
+    /// Spot removal tool active (ADR-0018): preview drawn without geometry.
+    spot_mode: bool,
+    /// Radius for new spots (and the selected one), fraction of the shorter side.
+    spot_size: f32,
+    selected_spot: Option<usize>,
+    spot_drag: Option<SpotDrag>,
     zoom: f32,
     pan_offset: egui::Vec2,
     loading: bool,
@@ -252,6 +278,10 @@ impl Viewer {
             crop_drag_start_pos: None,
             crop_drag_start_rect: None,
             crop_create_origin: None,
+            spot_mode: false,
+            spot_size: DEFAULT_SPOT_SIZE,
+            selected_spot: None,
+            spot_drag: None,
             zoom: 1.0,
             pan_offset: egui::Vec2::ZERO,
             loading: false,
@@ -306,13 +336,61 @@ impl Viewer {
 
     /// The edit state the preview is rendered with. In crop mode the applied
     /// crop is left out, so the full image is on screen and the crop overlay
-    /// (in full-image coordinates) lines up with it.
+    /// (in full-image coordinates) lines up with it. In spot mode straighten
+    /// and keystone are left out: what remains (rotate, flip, crop) maps
+    /// exactly back to source-image coordinates, where spots live (ADR-0018;
+    /// see `SpotProjection`).
     fn render_state(&self) -> EditState {
         let mut state = self.edit_state.clone();
         if self.crop_mode {
             state.crop = None;
         }
+        if self.spot_mode {
+            state.straighten = 0.0;
+            state.keystone = Default::default();
+        }
         state
+    }
+
+    /// Leaves crop mode, discarding any unapplied selection.
+    fn exit_crop_mode(&mut self) {
+        self.set_crop_mode(false);
+        self.pending_crop = None;
+        self.crop_drag = None;
+        self.crop_create_origin = None;
+    }
+
+    /// Enters or leaves the spot tool. Entering leaves crop mode; either way
+    /// the preview re-renders, since spot mode drops geometry (`render_state`).
+    fn set_spot_mode(&mut self, on: bool) {
+        if self.spot_mode == on {
+            return;
+        }
+        if on {
+            self.exit_crop_mode();
+        }
+        self.spot_mode = on;
+        self.selected_spot = None;
+        self.spot_drag = None;
+        self.needs_process = true;
+        self.last_slider_change = None;
+    }
+
+    /// Marks spot edits for re-render: `dragging` coalesces into interactive
+    /// passes like a slider drag, otherwise a final pass runs right away.
+    fn spots_changed(&mut self, dragging: bool) {
+        self.needs_process = true;
+        self.last_slider_change = dragging.then(Instant::now);
+    }
+
+    fn delete_selected_spot(&mut self) {
+        if let Some(i) = self.selected_spot.take() {
+            if i < self.edit_state.spots.len() {
+                self.edit_state.spots.remove(i);
+                self.spot_drag = None;
+                self.spots_changed(false);
+            }
+        }
     }
 
     /// Enters or leaves crop mode, re-rendering the preview when that changes
@@ -358,6 +436,9 @@ impl Viewer {
         self.pending_crop = None;
         self.crop_drag = None;
         self.crop_create_origin = None;
+        self.spot_mode = false;
+        self.selected_spot = None;
+        self.spot_drag = None;
         self.zoom = 1.0;
         self.pan_offset = egui::Vec2::ZERO;
         self.preview_max = PREVIEW_MAX;
@@ -564,6 +645,15 @@ impl Viewer {
         self.crop_aspect.normalized_ratio(self.crop_image_aspect())
     }
 
+    /// Width/height of the source image before geometry, which spots are
+    /// relative to. Falls back to square before the preview has loaded.
+    fn spot_image_aspect(&self) -> f32 {
+        self.preview
+            .as_ref()
+            .map(|p| p.width() as f32 / p.height().max(1) as f32)
+            .unwrap_or(1.0)
+    }
+
     /// Width/height of the image crop rects are relative to: the source
     /// after rotation (crop is applied post-rotation).
     fn crop_image_aspect(&self) -> Option<f32> {
@@ -581,11 +671,9 @@ impl Viewer {
     pub fn show_image(&mut self, ui: &mut egui::Ui, editable: bool) {
         // Leaving the editor (e.g. to fullscreen) abandons an in-progress crop,
         // like toggling Crop off, so the view goes back to the applied crop.
-        if !editable && self.crop_mode {
-            self.set_crop_mode(false);
-            self.pending_crop = None;
-            self.crop_drag = None;
-            self.crop_create_origin = None;
+        if !editable {
+            self.exit_crop_mode();
+            self.set_spot_mode(false);
         }
 
         // If edits arrive while processing is active, bump the requested generation
@@ -672,6 +760,7 @@ impl Viewer {
                     self.split_view = !self.split_view;
                 }
                 if ui.selectable_label(self.crop_mode, "Crop").clicked() {
+                    self.set_spot_mode(false);
                     self.set_crop_mode(!self.crop_mode);
                     if self.crop_mode {
                         // Enter crop mode: start with full image or existing applied crop
@@ -688,6 +777,13 @@ impl Viewer {
                         self.crop_create_origin = None;
                     }
                 }
+                if ui
+                    .selectable_label(self.spot_mode, "Spot")
+                    .on_hover_text("Spot removal: click a blemish to cover it")
+                    .clicked()
+                {
+                    self.set_spot_mode(!self.spot_mode);
+                }
 
                 if ui
                     .add_enabled(self.has_edits(), egui::Button::new("Save"))
@@ -701,6 +797,47 @@ impl Viewer {
                         ui.spinner();
                     });
                 }
+            });
+        }
+
+        // Spot mode toolbar: size, delete, clear
+        if editable && self.spot_mode {
+            ui.horizontal(|ui| {
+                ui.label("Size:");
+                if ui
+                    .add(
+                        egui::Slider::new(&mut self.spot_size, 0.001..=0.15)
+                            .logarithmic(true)
+                            .show_value(false),
+                    )
+                    .changed()
+                {
+                    let aspect = self.spot_image_aspect();
+                    let size = self.spot_size;
+                    if let Some(spot) =
+                        self.selected_spot.and_then(|i| self.edit_state.spots.get_mut(i))
+                    {
+                        spot.radius = size;
+                        spot.target = crate::state::clamp_center(spot.target, size, aspect);
+                        spot.source = crate::state::clamp_center(spot.source, size, aspect);
+                        self.spots_changed(true);
+                    }
+                }
+                if ui
+                    .add_enabled(self.selected_spot.is_some(), egui::Button::new("Delete"))
+                    .clicked()
+                {
+                    self.delete_selected_spot();
+                }
+                if ui
+                    .add_enabled(!self.edit_state.spots.is_empty(), egui::Button::new("Clear all"))
+                    .clicked()
+                {
+                    self.edit_state.spots.clear();
+                    self.selected_spot = None;
+                    self.spots_changed(false);
+                }
+                ui.weak("Click to add · drag circles to adjust · Delete removes");
             });
         }
 
@@ -793,7 +930,7 @@ impl Viewer {
                 });
             } else {
                 if editable && self.crop_mode {
-                    // Disable zoom/pan while in crop mode
+                    // Disable zoom/pan while cropping
                     let img_rect =
                         draw_fitted_image(ui, tex, avail_w, img_max_h, 1.0, egui::Vec2::ZERO);
                     self.handle_crop_interaction(ui, img_rect);
@@ -811,12 +948,18 @@ impl Viewer {
 
                     // Single interaction widget for zoom/pan — only the hovered
                     // viewer responds to scroll, so stacked windows don't conflict.
-                    let sense = if self.zoom > 1.0 {
-                        egui::Sense::click_and_drag()
+                    // The spot tool supplies its own (it pans on empty-area drags).
+                    let spot_tool = editable && self.spot_mode;
+                    let resp = if spot_tool {
+                        self.handle_spot_interaction(ui, img_rect, viewport_rect)
                     } else {
-                        egui::Sense::click()
+                        let sense = if self.zoom > 1.0 {
+                            egui::Sense::click_and_drag()
+                        } else {
+                            egui::Sense::click()
+                        };
+                        ui.interact(viewport_rect, ui.id().with("zoom_pan"), sense)
                     };
-                    let resp = ui.interact(viewport_rect, ui.id().with("zoom_pan"), sense);
 
                     // Scroll-to-zoom and pinch-to-zoom (only when hovered)
                     if resp.hovered() {
@@ -847,7 +990,7 @@ impl Viewer {
                     }
 
                     // Drag-to-pan when zoomed in
-                    if self.zoom > 1.0 {
+                    if self.zoom > 1.0 && !spot_tool {
                         if resp.dragged() {
                             self.pan_offset += resp.drag_delta();
                         }
@@ -950,6 +1093,134 @@ impl Viewer {
         if (self.zoom - zoom_before_bar).abs() > 0.001 {
             self.last_zoom_change = Some(Instant::now());
         }
+    }
+
+    /// Where spots appear on screen for the current preview (`img_rect` is the
+    /// full, possibly zoomed image rect).
+    fn spot_projection(&self, img_rect: egui::Rect) -> SpotProjection {
+        SpotProjection {
+            img_rect,
+            source_aspect: self.spot_image_aspect(),
+            rotate: self.edit_state.rotate,
+            flip_h: self.edit_state.flip_h,
+            flip_v: self.edit_state.flip_v,
+            crop: self.edit_state.crop.clone(),
+        }
+    }
+
+    /// Spot tool interaction: click empty image to add a spot, click a circle
+    /// to select it, drag a target or source circle to move it, drag empty
+    /// image to pan when zoomed, Delete or Backspace to remove the selected
+    /// spot, Escape to deselect. Returns the interaction response so the
+    /// caller can apply scroll/pinch zoom.
+    fn handle_spot_interaction(
+        &mut self,
+        ui: &mut egui::Ui,
+        img_rect: egui::Rect,
+        viewport_rect: egui::Rect,
+    ) -> egui::Response {
+        let resp = ui.interact(
+            viewport_rect.intersect(img_rect),
+            ui.id().with("spot_interact"),
+            egui::Sense::click_and_drag(),
+        );
+        let proj = self.spot_projection(img_rect);
+        let aspect = proj.source_aspect;
+
+        if resp.drag_started() {
+            // Hit-test where the button went down: by the time a drag
+            // registers the pointer may already have left a small circle.
+            let press = ui.input(|i| i.pointer.press_origin());
+            if let Some(pos) = press {
+                let hit = spot_hit_test(&self.edit_state.spots, self.selected_spot, pos, &proj);
+                if let Some((index, handle)) = hit {
+                    let spot = &self.edit_state.spots[index];
+                    let center = match handle {
+                        SpotHandle::Target => spot.target,
+                        SpotHandle::Source => spot.source,
+                    };
+                    let p = proj.to_source(pos);
+                    self.selected_spot = Some(index);
+                    self.spot_size = spot.radius;
+                    self.spot_drag = Some(SpotDrag {
+                        index,
+                        handle,
+                        grab_offset: [p[0] - center[0], p[1] - center[1]],
+                    });
+                }
+            }
+        }
+        let panning = resp.dragged() && self.spot_drag.is_none();
+        if panning && self.zoom > 1.0 {
+            self.pan_offset += resp.drag_delta();
+        }
+        if let (Some(drag), Some(pos)) = (self.spot_drag, resp.interact_pointer_pos()) {
+            if resp.dragged() {
+                if let Some(spot) = self.edit_state.spots.get_mut(drag.index) {
+                    let p = proj.to_source(pos);
+                    let moved = crate::state::clamp_center(
+                        [p[0] - drag.grab_offset[0], p[1] - drag.grab_offset[1]],
+                        spot.radius,
+                        aspect,
+                    );
+                    match drag.handle {
+                        SpotHandle::Target => spot.target = moved,
+                        SpotHandle::Source => spot.source = moved,
+                    }
+                    self.spots_changed(true);
+                }
+            }
+        }
+        if resp.drag_stopped() && self.spot_drag.take().is_some() {
+            self.spots_changed(false);
+        }
+
+        if resp.clicked() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                match spot_hit_test(&self.edit_state.spots, self.selected_spot, pos, &proj) {
+                    Some((index, _)) => {
+                        self.selected_spot = Some(index);
+                        self.spot_size = self.edit_state.spots[index].radius;
+                    }
+                    None => {
+                        let spot = Spot::new(proj.to_source(pos), self.spot_size, aspect);
+                        self.edit_state.spots.push(spot);
+                        self.selected_spot = Some(self.edit_state.spots.len() - 1);
+                        self.spots_changed(false);
+                    }
+                }
+            }
+        }
+
+        if resp.hovered() || self.spot_drag.is_some() {
+            let typing = ui.ctx().egui_wants_keyboard_input();
+            let delete = ui.input(|i| {
+                i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)
+            });
+            if delete && !typing {
+                self.delete_selected_spot();
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.selected_spot = None;
+            }
+
+            let hovered = resp.hover_pos().and_then(|pos| {
+                spot_hit_test(&self.edit_state.spots, self.selected_spot, pos, &proj)
+            });
+            let cursor = if self.spot_drag.is_some() || panning {
+                egui::CursorIcon::Grabbing
+            } else if hovered.is_some() {
+                egui::CursorIcon::Grab
+            } else {
+                egui::CursorIcon::Crosshair
+            };
+            ui.ctx().set_cursor_icon(cursor);
+        }
+
+        let painter = ui.painter().with_clip_rect(viewport_rect);
+        let accent = ui.visuals().selection.bg_fill;
+        draw_spot_overlay(&painter, accent, &proj, &self.edit_state.spots, self.selected_spot);
+        resp
     }
 
     /// Handle crop drag interaction on the pending crop and draw the overlay.
@@ -1359,6 +1630,138 @@ fn screen_to_norm_pos(pos: egui::Pos2, img_rect: egui::Rect) -> egui::Pos2 {
         (pos.x - img_rect.min.x) / img_rect.width(),
         (pos.y - img_rect.min.y) / img_rect.height(),
     )
+}
+
+/// Maps between source-image coordinates (where spots live) and the screen,
+/// for a preview rendered with rotate, flip and crop but no straighten or
+/// keystone (see `Viewer::render_state` in spot mode). The pipeline applies
+/// rotate (clockwise), then flips, then crop; `to_screen` follows that order
+/// and `to_source` inverts it exactly.
+struct SpotProjection {
+    /// Screen rect of the whole displayed image (zoomed, not clipped).
+    img_rect: egui::Rect,
+    /// Width/height of the source image before geometry.
+    source_aspect: f32,
+    rotate: i32,
+    flip_h: bool,
+    flip_v: bool,
+    crop: Option<Rect>,
+}
+
+impl SpotProjection {
+    fn to_screen(&self, p: [f32; 2]) -> egui::Pos2 {
+        let [mut u, mut v] = p;
+        (u, v) = match self.rotate.rem_euclid(360) {
+            90 => (1.0 - v, u),
+            180 => (1.0 - u, 1.0 - v),
+            270 => (v, 1.0 - u),
+            _ => (u, v),
+        };
+        if self.flip_h {
+            u = 1.0 - u;
+        }
+        if self.flip_v {
+            v = 1.0 - v;
+        }
+        if let Some(c) = &self.crop {
+            u = (u - c.x) / c.width;
+            v = (v - c.y) / c.height;
+        }
+        self.img_rect.min + egui::vec2(u * self.img_rect.width(), v * self.img_rect.height())
+    }
+
+    fn to_source(&self, pos: egui::Pos2) -> [f32; 2] {
+        let mut u = (pos.x - self.img_rect.min.x) / self.img_rect.width();
+        let mut v = (pos.y - self.img_rect.min.y) / self.img_rect.height();
+        if let Some(c) = &self.crop {
+            u = c.x + u * c.width;
+            v = c.y + v * c.height;
+        }
+        if self.flip_h {
+            u = 1.0 - u;
+        }
+        if self.flip_v {
+            v = 1.0 - v;
+        }
+        let (u, v) = match self.rotate.rem_euclid(360) {
+            90 => (v, 1.0 - u),
+            180 => (1.0 - u, 1.0 - v),
+            270 => (1.0 - v, u),
+            _ => (u, v),
+        };
+        [u, v]
+    }
+
+    /// A spot radius (fraction of the source's shorter side) in screen pixels.
+    fn radius_px(&self, radius: f32) -> f32 {
+        // Width of the rotated image in source-height units.
+        let rotated_w = match self.rotate.rem_euclid(360) {
+            90 | 270 => 1.0 / self.source_aspect,
+            _ => self.source_aspect,
+        };
+        let crop_w = self.crop.as_ref().map_or(1.0, |c| c.width);
+        let px_per_unit = self.img_rect.width() / (crop_w * rotated_w);
+        radius * rotated_w.min(1.0) * px_per_unit
+    }
+}
+
+/// Which spot circle is under `pos`. The selected spot's source circle is
+/// checked first (it's the only source drawn), then targets, topmost (last
+/// added) first.
+fn spot_hit_test(
+    spots: &[Spot],
+    selected: Option<usize>,
+    pos: egui::Pos2,
+    proj: &SpotProjection,
+) -> Option<(usize, SpotHandle)> {
+    let inside = |center: [f32; 2], radius: f32| {
+        // A minimum grab radius keeps tiny spots clickable.
+        proj.to_screen(center).distance(pos) <= proj.radius_px(radius).max(HANDLE_SIZE)
+    };
+    if let Some(i) = selected {
+        if let Some(spot) = spots.get(i) {
+            if inside(spot.source, spot.radius) {
+                return Some((i, SpotHandle::Source));
+            }
+        }
+    }
+    spots
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, s)| inside(s.target, s.radius))
+        .map(|(i, _)| (i, SpotHandle::Target))
+}
+
+/// Draws every spot's target circle; the selected spot also gets its source
+/// circle and a line joining the two.
+fn draw_spot_overlay(
+    painter: &egui::Painter,
+    accent: egui::Color32,
+    proj: &SpotProjection,
+    spots: &[Spot],
+    selected: Option<usize>,
+) {
+    let shadow = egui::Stroke::new(3.0, egui::Color32::from_black_alpha(110));
+    for (i, spot) in spots.iter().enumerate() {
+        let target = proj.to_screen(spot.target);
+        let r = proj.radius_px(spot.radius);
+        let is_selected = selected == Some(i);
+        let color = if is_selected { accent } else { egui::Color32::WHITE };
+        if is_selected {
+            let source = proj.to_screen(spot.source);
+            let dir = (source - target).normalized();
+            if (source - target).length() > 2.0 * r {
+                let line = [target + dir * r, source - dir * r];
+                painter.line_segment(line, shadow);
+                painter.line_segment(line, egui::Stroke::new(1.0, egui::Color32::WHITE));
+            }
+            painter.circle_stroke(source, r, shadow);
+            painter.circle_stroke(source, r, egui::Stroke::new(1.0, egui::Color32::WHITE));
+        }
+        painter.circle_stroke(target, r, shadow);
+        painter.circle_stroke(target, r, egui::Stroke::new(1.5, color));
+    }
 }
 
 /// Which part of the crop rect, if any, a drag starting at `pos` would grab.
@@ -2344,7 +2747,8 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        CropAspect, DragTarget, HANDLE_SIZE, INTERACTIVE_PREVIEW_MAX, PreviewBackend,
+        CropAspect, DragTarget, HANDLE_SIZE, INTERACTIVE_PREVIEW_MAX, PreviewBackend, SpotHandle,
+        SpotProjection, spot_hit_test,
         bump_requested_generation_for_pending_changes, crop_hit_target, downscale_for_interactive,
         anchored_rect, constrain_aspect, edit_state_signature, load_preview_stages_with_hooks,
         resize_from_corner, resize_from_edge,
@@ -2564,6 +2968,129 @@ mod tests {
         v.set_crop_mode(false);
         assert!(v.render_state().crop.is_some());
         assert!(v.needs_process, "leaving crop mode must re-render");
+    }
+
+    #[test]
+    fn spot_mode_drops_only_non_invertible_geometry() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.edit_state.rotate = 90;
+        v.edit_state.flip_h = true;
+        v.edit_state.straighten = 3.0;
+        v.edit_state.keystone.vertical = 0.2;
+        v.edit_state.crop = Some(crop(0.1, 0.1, 0.5, 0.5));
+        v.edit_state.exposure = 0.7;
+
+        v.set_spot_mode(true);
+        let r = v.render_state();
+        assert_eq!(r.straighten, 0.0);
+        assert_eq!(r.keystone.vertical, 0.0);
+        // Exactly invertible geometry stays, so spots are placed on the
+        // oriented, cropped view.
+        assert_eq!((r.rotate, r.flip_h), (90, true));
+        assert!(r.crop.is_some());
+        assert_eq!(r.exposure, 0.7, "color edits stay on while placing spots");
+        assert!(v.needs_process);
+        assert_eq!(v.edit_state.straighten, 3.0, "saved geometry is untouched");
+    }
+
+    #[test]
+    fn spot_and_crop_modes_are_exclusive() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.set_crop_mode(true);
+        v.pending_crop = Some(crop(0.0, 0.0, 0.5, 0.5));
+        v.set_spot_mode(true);
+        assert!(!v.crop_mode);
+        assert!(v.pending_crop.is_none(), "entering spot mode discards the unapplied crop");
+    }
+
+    #[test]
+    fn deleting_the_selected_spot_removes_only_it() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        for x in [0.2, 0.5, 0.8] {
+            v.edit_state.spots.push(crate::state::Spot::new([x, 0.5], 0.05, 1.0));
+        }
+        v.selected_spot = Some(1);
+        v.delete_selected_spot();
+        let xs: Vec<f32> = v.edit_state.spots.iter().map(|s| s.target[0]).collect();
+        assert_eq!(xs, vec![0.2, 0.8]);
+        assert_eq!(v.selected_spot, None);
+    }
+
+    fn projection(
+        img_rect: egui::Rect,
+        source_aspect: f32,
+        rotate: i32,
+        flip_h: bool,
+        flip_v: bool,
+        crop: Option<crate::state::Rect>,
+    ) -> SpotProjection {
+        SpotProjection {
+            img_rect,
+            source_aspect,
+            rotate,
+            flip_h,
+            flip_v,
+            crop,
+        }
+    }
+
+    #[test]
+    fn spot_projection_round_trips_through_every_orientation_and_crop() {
+        let img = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(300.0, 200.0));
+        let p = [0.3, 0.6];
+        for rotate in [0, 90, 180, 270] {
+            for (fh, fv) in [(false, false), (true, false), (false, true), (true, true)] {
+                for crop in [None, Some(crop(0.1, 0.2, 0.7, 0.6))] {
+                    let proj = projection(img, 1.5, rotate, fh, fv, crop);
+                    let back = proj.to_source(proj.to_screen(p));
+                    assert!(
+                        (back[0] - p[0]).abs() < 1e-5 && (back[1] - p[1]).abs() < 1e-5,
+                        "rotate {rotate} flip {fh}/{fv}: {back:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spot_projection_rotates_clockwise_like_the_pipeline() {
+        let img = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 100.0));
+        // Source top-left lands top-right after a clockwise 90° turn.
+        let proj = projection(img, 1.0, 90, false, false, None);
+        assert_eq!(proj.to_screen([0.0, 0.0]), egui::pos2(100.0, 0.0));
+    }
+
+    #[test]
+    fn spot_radius_scales_with_crop_zoom() {
+        // 3:2 source shown uncropped 300px wide: shorter side is 200px.
+        let img = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 200.0));
+        let full = projection(img, 1.5, 0, false, false, None);
+        assert!((full.radius_px(0.1) - 20.0).abs() < 1e-3);
+        // Same screen size showing a half-width crop: twice as big on screen.
+        let cropped = projection(img, 1.5, 0, false, false, Some(crop(0.0, 0.0, 0.5, 0.5)));
+        assert!((cropped.radius_px(0.1) - 40.0).abs() < 1e-3);
+        // Rotated 90°: the displayed image is 2:3; shorter side is its width.
+        let tall = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 300.0));
+        let rotated = projection(tall, 1.5, 90, false, false, None);
+        assert!((rotated.radius_px(0.1) - 20.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn spot_hit_test_prefers_selected_source_then_topmost_target() {
+        let img = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 400.0));
+        let proj = projection(img, 1.0, 0, false, false, None);
+        let mut a = crate::state::Spot::new([0.25, 0.25], 0.05, 1.0);
+        a.source = [0.5, 0.5];
+        let b = crate::state::Spot::new([0.5, 0.5], 0.05, 1.0); // target over a's source
+        let spots = vec![a, b];
+        let center = egui::pos2(200.0, 200.0);
+        assert_eq!(spot_hit_test(&spots, None, center, &proj), Some((1, SpotHandle::Target)));
+        assert_eq!(spot_hit_test(&spots, Some(0), center, &proj), Some((0, SpotHandle::Source)));
+        assert_eq!(
+            spot_hit_test(&spots, None, egui::pos2(100.0, 100.0), &proj),
+            Some((0, SpotHandle::Target))
+        );
+        assert_eq!(spot_hit_test(&spots, None, egui::pos2(390.0, 10.0), &proj), None);
     }
 
     #[test]

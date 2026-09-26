@@ -22,6 +22,7 @@ struct GpuContext {
     queue: wgpu::Queue,
     color: PipelineBundle,
     geometry: OnceLock<PipelineBundle>,
+    spots: OnceLock<PipelineBundle>,
     blur_h: OnceLock<PipelineBundle>,
     blur_v_usm: OnceLock<PipelineBundle>,
     adapter_name: String,
@@ -35,6 +36,28 @@ impl GpuContext {
         self.geometry.get_or_init(|| {
             let entries = tex_storage_uniform_entries();
             create_pipeline_bundle(&self.device, "gpu_geometry", GEOMETRY_SHADER_SRC, &entries)
+        })
+    }
+
+    fn spots(&self) -> &PipelineBundle {
+        self.spots.get_or_init(|| {
+            let [tex, out, _] = tex_storage_uniform_entries();
+            let spots_buffer = wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            };
+            create_pipeline_bundle(
+                &self.device,
+                "gpu_spots",
+                SPOTS_SHADER_SRC,
+                &[tex, out, spots_buffer],
+            )
         })
     }
 
@@ -214,6 +237,7 @@ fn has_gpu_adjustments(state: &EditState) -> bool {
         || selective_active
         || state.sharpness > STATE_EPS
         || has_geometry(state)
+        || !state.spots.is_empty()
 }
 
 /// Compute output dimensions after geometry transforms (rotation + crop).
@@ -403,6 +427,74 @@ fn apply_gpu(src: &RgbaImage, state: &EditState) -> Option<RgbaImage> {
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("gpu_pipeline_encoder"),
         });
+
+    // Spot removal runs first, on the source (ADR-0018); later passes read
+    // its output in place of the uploaded source.
+    let src_texture = if state.spots.is_empty() {
+        src_texture
+    } else {
+        let spots_out = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gpu_pipeline_spots_out"),
+            size: src_extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        // Header [width, height, count, pad], then per spot two vec4s:
+        // [cx, cy, radius, inner], [dx, dy, pad, pad].
+        let mut data: Vec<f32> = vec![src_w as f32, src_h as f32, state.spots.len() as f32, 0.0];
+        for spot in &state.spots {
+            let s = super::spots::SpotPx::new(spot, src_w, src_h);
+            data.extend_from_slice(&[s.cx, s.cy, s.radius, s.inner]);
+            data.extend_from_slice(&[s.dx as f32, s.dy as f32, 0.0, 0.0]);
+        }
+        let spots_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gpu_pipeline_spots"),
+            size: std::mem::size_of_val(data.as_slice()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        ctx.queue.write_buffer(&spots_buffer, 0, f32s_as_bytes(&data));
+
+        let src_view = src_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let out_view = spots_out.create_view(&wgpu::TextureViewDescriptor::default());
+        let bundle = ctx.spots();
+        let bg = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gpu_pipeline_spots_bg"),
+            layout: &bundle.bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&src_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&out_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: spots_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("gpu_pipeline_spots_pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&bundle.pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(
+                src_w.div_ceil(WORKGROUP_SIZE),
+                src_h.div_ceil(WORKGROUP_SIZE),
+                1,
+            );
+        }
+        spots_out
+    };
 
     // The texture that feeds into the color pass — either geometry output or src
     let color_input_texture;
@@ -948,6 +1040,7 @@ fn init_gpu_context() -> Option<GpuContext> {
         queue,
         color,
         geometry: OnceLock::new(),
+        spots: OnceLock::new(),
         blur_h: OnceLock::new(),
         blur_v_usm: OnceLock::new(),
         adapter_name,
@@ -1369,6 +1462,69 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // Horizontal separable Gaussian blur (sigma=1.5, radius=5, 11 taps)
 // Fully unrolled to avoid driver crashes from array+loop SPIR-V patterns.
+/// Spot removal: every spot reads the unretouched source and blends into the
+/// result in order. Mirrors `processing::spots::apply_rgba` via `SpotPx`.
+const SPOTS_SHADER_SRC: &str = r#"
+struct Header {
+    width: f32,
+    height: f32,
+    count: f32,
+    _pad: f32,
+}
+
+struct SpotPx {
+    // cx, cy, radius, inner
+    circle: vec4<f32>,
+    // dx, dy (whole pixels), pad, pad
+    offset: vec4<f32>,
+}
+
+struct Spots {
+    header: Header,
+    spots: array<SpotPx>,
+}
+
+@group(0) @binding(0)
+var src_tex: texture_2d<f32>;
+@group(0) @binding(1)
+var dst_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2)
+var<storage, read> data: Spots;
+
+@compute @workgroup_size(16, 16, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let w = i32(data.header.width + 0.5);
+    let h = i32(data.header.height + 0.5);
+    let x = i32(gid.x);
+    let y = i32(gid.y);
+    if (x >= w || y >= h) {
+        return;
+    }
+
+    var c = textureLoad(src_tex, vec2<i32>(x, y), 0);
+    let p = vec2<f32>(f32(x) + 0.5, f32(y) + 0.5);
+    let count = i32(data.header.count + 0.5);
+    for (var i = 0; i < count; i = i + 1) {
+        let s = data.spots[i];
+        let radius = s.circle.z;
+        let inner = s.circle.w;
+        let d = distance(p, s.circle.xy);
+        if (d >= radius) {
+            continue;
+        }
+        var a = 1.0;
+        if (d > inner) {
+            a = 1.0 - smoothstep(inner, radius, d);
+        }
+        let sx = clamp(x + i32(s.offset.x), 0, w - 1);
+        let sy = clamp(y + i32(s.offset.y), 0, h - 1);
+        let cloned = textureLoad(src_tex, vec2<i32>(sx, sy), 0);
+        c = c + (cloned - c) * a;
+    }
+    textureStore(dst_tex, vec2<i32>(x, y), c);
+}
+"#;
+
 const BLUR_H_SHADER_SRC: &str = r#"
 struct BlurParams {
     width: f32,
@@ -1738,6 +1894,72 @@ mod tests {
         let mut s5 = EditState::default();
         s5.keystone.vertical = 0.1;
         assert!(is_gpu_state_supported(&s5));
+    }
+
+    fn spot_test_image() -> DynamicImage {
+        DynamicImage::ImageRgba8(ImageBuffer::from_fn(64, 48, |x, y| {
+            Rgba([
+                ((x * 7 + y * 3) % 256) as u8,
+                ((x * 11 + y * 5) % 256) as u8,
+                ((x * 13 + y * 17) % 256) as u8,
+                255,
+            ])
+        }))
+    }
+
+    fn spot(target: [f32; 2], source: [f32; 2], radius: f32, feather: f32) -> crate::state::Spot {
+        crate::state::Spot {
+            target,
+            source,
+            radius,
+            feather,
+            mode: crate::state::SpotMode::Clone,
+        }
+    }
+
+    #[test]
+    fn parity_spots_clone() {
+        if !super::is_available() {
+            return;
+        }
+        let img = spot_test_image();
+        let mut state = EditState::default();
+        state.spots = vec![
+            spot([0.3, 0.4], [0.7, 0.6], 0.15, 0.0),
+            spot([0.5, 0.5], [0.2, 0.2], 0.2, 0.6),
+            // Overlaps the first: must read unretouched pixels on both paths.
+            spot([0.35, 0.45], [0.8, 0.3], 0.1, 1.0),
+        ];
+        let cpu = crate::processing::transform::apply(&img, &state).to_rgba8();
+        let gpu = try_apply(&img, &state)
+            .expect("gpu apply should succeed for spots")
+            .to_rgba8();
+        assert_ne!(cpu, img.to_rgba8(), "spots must change the image");
+        assert_rgba_close(&cpu, &gpu, 1);
+    }
+
+    #[test]
+    fn parity_spots_before_geometry_and_color() {
+        if !super::is_available() {
+            return;
+        }
+        let img = spot_test_image();
+        let mut state = EditState::default();
+        state.spots = vec![spot([0.3, 0.4], [0.7, 0.6], 0.15, 0.5)];
+        state.rotate = 90;
+        state.flip_h = true;
+        state.crop = Some(Rect {
+            x: 0.1,
+            y: 0.1,
+            width: 0.8,
+            height: 0.7,
+        });
+        state.exposure = 0.4;
+        let cpu = crate::processing::transform::apply(&img, &state).to_rgba8();
+        let gpu = try_apply(&img, &state)
+            .expect("gpu apply should succeed for spots + geometry + color")
+            .to_rgba8();
+        assert_rgba_close(&cpu, &gpu, 1);
     }
 
     #[test]

@@ -5,12 +5,18 @@ use imageproc::geometric_transformations::{
 
 use crate::state::{EditState, Keystone};
 
-use super::{color, exposure, filters, sharpness};
+use super::{color, exposure, filters, sharpness, spots};
 
-/// Apply all geometry transforms from `state` to `img`.
-/// Order: straighten → keystone → orthogonal rotate → flip → crop.
+/// Apply all edits from `state` to `img`.
+/// Order: spots → straighten → keystone → orthogonal rotate → flip → crop →
+/// exposure → color → filters → sharpness.
 pub fn apply(img: &DynamicImage, state: &EditState) -> DynamicImage {
     let mut out = img.clone();
+
+    // Spot removal — on the source image, before any geometry (ADR-0018)
+    if !state.spots.is_empty() {
+        out = spots::apply(&out, &state.spots);
+    }
 
     // Straighten — arbitrary angle, bilinear interpolation
     if state.straighten.abs() > 0.01 {
