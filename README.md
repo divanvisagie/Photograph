@@ -31,7 +31,7 @@ Current support intent: Ubuntu Linux only (see [ADR-0012](docs/adr/0012-drop-mac
 
 ## Supported Formats
 
-- RAW decode via `rawler`: `RAF`, `DNG`, `NEF`, `CR2`, `ARW`
+- RAW decode via `rawler`: `RAF`, `DNG`, `NEF`, `CR2`, `CR3`, `ARW`
 - Standard image formats via `image` crate fast path (for example `JPG`, `PNG`, `TIFF`, `WebP`, `BMP`)
 - The browser also recognizes `HEIC` and `AVIF` extensions, but actual decode support depends on the image stack available in the current build
 

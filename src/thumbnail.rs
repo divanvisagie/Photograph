@@ -7,10 +7,10 @@ use crate::processing::highlights;
 
 pub const THUMB_SIZE: u32 = 300;
 
-static RAW_EXTS: &[&str] = &["raf", "dng", "nef", "cr2", "arw"];
+static RAW_EXTS: &[&str] = &["raf", "dng", "nef", "cr2", "cr3", "arw"];
 static SUPPORTED_IMAGE_EXTS: &[&str] = &[
-    "jpg", "jpeg", "png", "tiff", "tif", "webp", "bmp", "raf", "dng", "nef", "cr2", "arw", "heic",
-    "avif",
+    "jpg", "jpeg", "png", "tiff", "tif", "webp", "bmp", "raf", "dng", "nef", "cr2", "cr3", "arw",
+    "heic", "avif",
 ];
 
 fn has_extension(path: &Path, exts: &[&str]) -> bool {

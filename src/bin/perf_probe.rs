@@ -16,7 +16,6 @@ mod state;
 mod thumbnail;
 
 const PREVIEW_MAX: u32 = 1920;
-const RAW_EXTS: &[&str] = &["raf", "dng", "nef", "cr2", "arw"];
 
 #[derive(Clone, Copy, Debug)]
 enum ProbeBackend {
@@ -44,19 +43,12 @@ impl ProbeBackend {
     }
 }
 
-fn has_extension(path: &Path, exts: &[&str]) -> bool {
-    let Some(ext) = path.extension().map(|e| e.to_string_lossy()) else {
-        return false;
-    };
-    exts.iter().any(|known| ext.eq_ignore_ascii_case(known))
-}
-
 fn list_raw_files(dir: &Path, limit: usize) -> Result<Vec<PathBuf>> {
     let mut files: Vec<PathBuf> = fs::read_dir(dir)
         .with_context(|| format!("read_dir failed for {}", dir.display()))?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.is_file() && has_extension(p, RAW_EXTS))
+        .filter(|p| p.is_file() && thumbnail::is_raw_image(p))
         .collect();
     files.sort();
     if files.len() > limit {
