@@ -42,7 +42,7 @@ Current support intent: Ubuntu Linux only (see [ADR-0012](docs/adr/0012-drop-mac
 Download the latest `.deb` and install it with apt:
 
 ```bash
-wget https://github.com/divanvisagie/Photograph/releases/latest/download/photograph_amd64.deb
+wget -O photograph_amd64.deb https://github.com/divanvisagie/Photograph/releases/latest/download/photograph_amd64.deb
 sudo apt install ./photograph_amd64.deb
 ```
 
@@ -158,7 +158,7 @@ Releases are cut from `master` only. The tag and the `.deb` version both come fr
 1. Bump the version, then merge to `master` and push:
 
    ```bash
-   make bump V=0.1.4   # updates Cargo.toml + Cargo.lock and commits
+   make bump V=0.1.4   # updates Cargo.toml, Cargo.lock and the site download link, then commits
    ```
 
 2. On `master`, with the bump pushed:
@@ -170,8 +170,17 @@ Releases are cut from `master` only. The tag and the `.deb` version both come fr
 `make release` first runs `make release-check`. The check fails if you're not on `master`, if the
 working tree has uncommitted changes, if `HEAD` isn't the same as `origin/master`, or if the version
 is already tagged. `make release` then builds the `.deb`, creates an annotated `v<version>` tag on
-`HEAD`, pushes the tag, and publishes the GitHub release with `--verify-tag`. The release gets two copies of the `.deb`: the versioned one and an unversioned `photograph_amd64.deb`, which the "latest" download link on the README and the landing page points to. This way the release
+`HEAD`, pushes the tag, and publishes the GitHub release with `--verify-tag`. This way the release
 points at the exact commit the `.deb` was built from. It needs the `gh` CLI, logged in.
+
+Each release gets two copies of the `.deb`: the versioned one, and an unversioned
+`photograph_amd64.deb` at a stable "latest" URL.
+
+- **Landing page** (`docs/index.html`): the download button and its `wget` line link the
+  *versioned* file, so each version downloads under its own name. `make bump` rewrites those links
+  to the new version, and `make release-check` refuses to release if they don't match.
+- **Terminal instructions:** they use the stable URL with `wget -O`, so a re-download overwrites
+  the old file instead of being saved beside it.
 
 Linux packaging assets live under `packaging/linux/`.
 

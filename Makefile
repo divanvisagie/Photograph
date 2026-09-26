@@ -29,6 +29,7 @@ ICON_TMP_DIR := target/icons
 
 RELEASE_BRANCH := master
 TAG := v$(VERSION)
+SITE_PAGE := docs/index.html
 
 .DEFAULT_GOAL := help
 
@@ -126,14 +127,22 @@ release-check: ## Verify a release can be cut (on master, clean, pushed, version
 	@git fetch --quiet --tags origin "$(RELEASE_BRANCH)"
 	@test "$$(git rev-parse HEAD)" = "$$(git rev-parse "origin/$(RELEASE_BRANCH)")" || { echo "HEAD differs from origin/$(RELEASE_BRANCH) — push or pull first"; exit 1; }
 	@! git rev-parse -q --verify "refs/tags/$(TAG)" >/dev/null || { echo "$(TAG) is already tagged — bump the version first: make bump V=x.y.z"; exit 1; }
+	@grep -q "releases/download/$(TAG)/$(APP_NAME)_$(DEB_VERSION)_$(ARCH).deb" "$(SITE_PAGE)" || { echo "$(SITE_PAGE) doesn't link $(TAG)'s .deb — bump with make bump V=x.y.z"; exit 1; }
 	@echo "Ready to release $(TAG) from $(RELEASE_BRANCH) at $$(git rev-parse --short HEAD)"
 
-bump: ## Set the version and commit it: make bump V=x.y.z
+bump: ## Set the version, point the site download at it, and commit: make bump V=x.y.z
 	@echo "$(V)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "usage: make bump V=x.y.z"; exit 1; }
 	@test -z "$$(git status --porcelain)" || { echo "working tree has uncommitted changes"; exit 1; }
 	sed -i '0,/^version = ".*"/s//version = "$(V)"/' Cargo.toml
 	cargo update --workspace --quiet
-	git commit --quiet -m "Bump version to $(V)" Cargo.toml Cargo.lock
+	@# Point the landing page's download button and wget line at the new
+	@# release's versioned .deb, so each version downloads under its own name.
+	sed -i -E \
+		-e 's#releases/download/v[0-9.]+/$(APP_NAME)_[0-9.]+-[0-9]+_$(ARCH)\.deb#releases/download/v$(V)/$(APP_NAME)_$(V)-$(DEB_REVISION)_$(ARCH).deb#g' \
+		-e 's#\./$(APP_NAME)_[0-9.]+-[0-9]+_$(ARCH)\.deb#./$(APP_NAME)_$(V)-$(DEB_REVISION)_$(ARCH).deb#g' \
+		-e 's#Download \.deb \(v[0-9.]+\)#Download .deb (v$(V))#g' \
+		"$(SITE_PAGE)"
+	git commit --quiet -m "Bump version to $(V)" Cargo.toml Cargo.lock "$(SITE_PAGE)"
 	@echo "Bumped $(VERSION) -> $(V)"
 
 build-unsupported:
