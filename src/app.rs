@@ -918,11 +918,19 @@ impl eframe::App for PhotographApp {
                     .inner_margin(egui::Margin::symmetric(10, 10)),
             )
             .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        self.browser.show_sidebar(ui);
+                // Version pinned to the bottom; the folder list fills and
+                // scrolls in the space above it.
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.label(egui::RichText::new(version_label()).weak().small());
+                    ui.separator();
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                self.browser.show_sidebar(ui);
+                            });
                     });
+                });
             });
 
         // Tools panel only applies while actively editing a photo
@@ -1177,6 +1185,12 @@ impl eframe::App for PhotographApp {
         self.config.browse_path = Some(self.browser.current_dir.clone());
         self.config.save();
     }
+}
+
+/// "Photograph v0.4.1", from Cargo.toml at build time; debug builds say so.
+fn version_label() -> String {
+    let debug = if cfg!(debug_assertions) { " (debug)" } else { "" };
+    format!("Photograph v{}{debug}", env!("CARGO_PKG_VERSION"))
 }
 
 fn preview_status_summary(backend: PreviewBackend) -> (String, Option<String>, Option<GpuVendor>) {
