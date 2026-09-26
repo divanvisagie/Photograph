@@ -4,6 +4,8 @@ use std::{
     sync::mpsc,
 };
 
+use crate::locations::{self, Location};
+
 const CELL: f32 = 170.0;
 const FILMSTRIP_CELL: f32 = 64.0;
 const MAX_THUMB_JOBS: usize = 4;
@@ -36,7 +38,12 @@ pub struct Browser {
     /// checkboxes, drives the filmstrip, and is what Render targets.
     pub selection: HashSet<PathBuf>,
     path_edit: String,
-    locations: Vec<(PathBuf, String)>,
+    /// Set when the path bar holds text that isn't a navigable path.
+    path_error: Option<String>,
+    /// Photo to focus once a pending navigation lands (path bar given a file).
+    pending_select: Option<PathBuf>,
+    storage_locations: Vec<Location>,
+    network_locations: Vec<Location>,
     scan_error: Option<String>,
 }
 
@@ -62,7 +69,10 @@ impl Browser {
             selected: None,
             select_anchor: None,
             selection: HashSet::new(),
-            locations: Vec::new(),
+            path_error: None,
+            pending_select: None,
+            storage_locations: Vec::new(),
+            network_locations: Vec::new(),
             scan_error: None,
         };
         b.scan_locations();
@@ -80,15 +90,7 @@ impl Browser {
             Ok(rd) => rd,
             Err(e) => {
                 let msg = if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    if std::env::var_os("SNAP").is_some() {
-                        format!(
-                            "Cannot read this directory (permission denied). \
-                             If installed as a Snap, run:\n\
-                             sudo snap connect photograph:removable-media"
-                        )
-                    } else {
-                        format!("Cannot read this directory: permission denied")
-                    }
+                    "Cannot read this directory: permission denied".to_string()
                 } else {
                     format!("Cannot read this directory: {e}")
                 };
@@ -115,31 +117,11 @@ impl Browser {
     }
 
     fn scan_locations(&mut self) {
-        self.locations.clear();
-
-        if let Some(home) = dirs::home_dir() {
-            self.locations.push((home, "Home".into()));
-        }
-
-        let user = std::env::var("USER").unwrap_or_default();
-        let search_dirs = [
-            format!("/media/{user}"),
-            "/mnt".into(),
-            format!("/run/media/{user}"),
-        ];
-
-        for parent in &search_dirs {
-            let parent = PathBuf::from(parent);
-            if let Ok(entries) = std::fs::read_dir(&parent) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        let name = entry.file_name().to_string_lossy().into_owned();
-                        self.locations.push((path, name));
-                    }
-                }
-            }
-        }
+        let home = dirs::home_dir();
+        let (storage, mut network) = locations::mounted_locations(home.as_deref());
+        network.extend(locations::gvfs_locations());
+        self.storage_locations = storage;
+        self.network_locations = network;
     }
 
     fn navigate(&mut self, dir: PathBuf) {
@@ -225,11 +207,18 @@ impl Browser {
         if let Some(nav) = self.pending_nav.take() {
             self.current_dir = nav;
             self.path_edit = self.current_dir.display().to_string();
+            self.path_error = None;
             self.selected = None;
             self.select_anchor = None;
             self.selection.clear();
             self.scan_locations();
             self.scan();
+            if let Some(file) = self.pending_select.take() {
+                if self.images.iter().any(|(p, _)| *p == file) {
+                    self.select_anchor = Some(file.clone());
+                    self.selected = Some(file);
+                }
+            }
         }
 
         self.drain_channel(ctx);
@@ -241,15 +230,40 @@ impl Browser {
     pub fn show_sidebar(&mut self, ui: &mut egui::Ui) {
         let mut nav_to: Option<PathBuf> = None;
 
-        if !self.locations.is_empty() {
-            ui.label(egui::RichText::new("LOCATIONS").weak().small());
-            for (path, label) in &self.locations {
-                let is_current = *path == self.current_dir;
+        ui.label(egui::RichText::new("LOCATIONS").weak().small());
+        let mut places: Vec<(PathBuf, &str, &str)> = Vec::new();
+        if let Some(home) = dirs::home_dir() {
+            places.push((home, "\u{1F3E0}", "Home"));
+        }
+        places.push((PathBuf::from("/"), "\u{1F4BB}", "Computer"));
+        for (path, icon, label) in places {
+            let is_current = path == self.current_dir;
+            if ui
+                .selectable_label(is_current, format!("{icon} {label}"))
+                .on_hover_text(path.display().to_string())
+                .clicked()
+            {
+                nav_to = Some(path);
+            }
+        }
+        ui.add_space(8.0);
+
+        for (heading, icon, list) in [
+            ("STORAGE", "\u{1F4BE}", &self.storage_locations),
+            ("NETWORK", "\u{1F310}", &self.network_locations),
+        ] {
+            if list.is_empty() {
+                continue;
+            }
+            ui.label(egui::RichText::new(heading).weak().small());
+            for loc in list {
+                let is_current = loc.path == self.current_dir;
                 if ui
-                    .selectable_label(is_current, format!("\u{1F5C2} {}", label))
+                    .selectable_label(is_current, format!("{icon} {}", loc.label))
+                    .on_hover_text(&loc.detail)
                     .clicked()
                 {
-                    nav_to = Some(path.clone());
+                    nav_to = Some(loc.path.clone());
                 }
             }
             ui.add_space(8.0);
@@ -260,8 +274,9 @@ impl Browser {
 
         // Editable path bar + up button
         ui.horizontal(|ui| {
+            let has_parent = self.current_dir.parent().is_some();
             if ui
-                .button("\u{2B06}")
+                .add_enabled(has_parent, egui::Button::new("\u{2B06}"))
                 .on_hover_text("Parent directory")
                 .clicked()
             {
@@ -276,15 +291,28 @@ impl Browser {
                     .font(egui::TextStyle::Monospace),
             );
             if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                let candidate = PathBuf::from(&self.path_edit);
+                let candidate =
+                    locations::expand_typed_path(&self.path_edit, dirs::home_dir().as_deref());
                 if candidate.is_dir() {
                     nav_to = Some(candidate);
+                } else if candidate.is_file() {
+                    // A photo path: open its folder with the photo focused.
+                    if let Some(parent) = candidate.parent() {
+                        nav_to = Some(parent.to_path_buf());
+                        self.pending_select = Some(candidate);
+                    }
                 } else {
-                    // Revert to current dir if invalid
-                    self.path_edit = self.current_dir.display().to_string();
+                    // Keep the typed text so it can be corrected.
+                    self.path_error = Some(format!("No such folder: {}", candidate.display()));
                 }
             }
+            if resp.changed() {
+                self.path_error = None;
+            }
         });
+        if let Some(err) = &self.path_error {
+            ui.colored_label(ui.visuals().error_fg_color, err);
+        }
 
         ui.add_space(4.0);
         ui.separator();

@@ -2,6 +2,7 @@ mod app;
 mod browser;
 mod config;
 mod editor;
+mod locations;
 mod metadata;
 mod processing;
 mod state;

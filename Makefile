@@ -23,22 +23,24 @@ LINUX_ICON_DST := $(PKG_ROOT)/usr/share/icons/hicolor/scalable/apps/$(APP_NAME).
 
 ICON_TMP_DIR := target/icons
 
-SNAP_FILE := $(APP_NAME)_$(VERSION)_$(ARCH).snap
+.DEFAULT_GOAL := help
 
-SNAP_SCREENSHOT_SRC := docs/photograph-ui.png
-SNAP_SCREENSHOT_DST := docs/photograph-ui-store.jpg
+.PHONY: help dev build build-linux build-deb build-unsupported install install-linux install-unsupported clean-deb clean-icons icons icon-runtime release docs
 
-.PHONY: dev build build-linux build-deb build-unsupported install install-linux install-unsupported clean-deb clean-icons icons icon-runtime snap snap-install snap-publish snap-screenshot release docs
+help: ## Show this help
+	@echo "Usage: make <target>"
+	@echo
+	@awk 'BEGIN { FS = ":.*## " } /^[a-z-]+:.*## / { printf "  \033[1m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-dev:
+dev: ## Run with live reload (requires cargo-watch)
 	@command -v cargo-watch >/dev/null 2>&1 || { echo "cargo-watch is required: cargo install cargo-watch"; exit 1; }
 	RUST_LOG=photograph=debug cargo watch -x "run --bin photograph"
 
-build: build-$(PLATFORM)
+build: build-$(PLATFORM) ## Build the .deb
 
-install: install-$(PLATFORM)
+install: install-$(PLATFORM) ## Build and install the .deb via apt
 
-icons: icon-runtime
+icons: icon-runtime ## Regenerate the runtime icon PNG from the SVG
 
 icon-runtime:
 	@test -f "$(ICON_SOURCE_SVG)" || { echo "missing icon source: $(ICON_SOURCE_SVG)"; exit 1; }
@@ -60,9 +62,9 @@ icon-runtime:
 	render_png 128 "$(RUNTIME_ICON_PNG)"
 	@echo "Generated runtime icon: $(RUNTIME_ICON_PNG)"
 
-build-linux: build-deb snap
+build-linux: build-deb
 
-build-deb:
+build-deb: ## Build the .deb into target/deb/
 	@command -v dpkg-deb >/dev/null 2>&1 || { echo "dpkg-deb is required (install dpkg-dev)."; exit 1; }
 	@test -f "$(LINUX_DESKTOP_SRC)" || { echo "missing launcher file: $(LINUX_DESKTOP_SRC)"; exit 1; }
 	@test -f "$(LINUX_ICON_SRC)" || { echo "missing icon file: $(LINUX_ICON_SRC)"; exit 1; }
@@ -95,33 +97,13 @@ build-deb:
 install-linux: build-deb
 	sudo apt install --reinstall -y "./$(DEB_PATH)"
 
-clean-deb:
+clean-deb: ## Remove built .deb artifacts
 	rm -rf "$(DEB_DIR)"
 
-release: build-deb
+release: build-deb ## Build the .deb and publish a GitHub release (requires gh)
 	@command -v gh >/dev/null 2>&1 || { echo "gh CLI is required: https://cli.github.com"; exit 1; }
 	gh release create "v$(VERSION)" "$(DEB_PATH)" --title "v$(VERSION)" --generate-notes
 	@echo "Created GitHub release v$(VERSION) with $(DEB_PATH)"
-
-snap:
-	@command -v snapcraft >/dev/null 2>&1 || { echo "snapcraft is required: sudo snap install snapcraft --classic"; exit 1; }
-	snapcraft pack
-	@echo "Built snap: $(SNAP_FILE)"
-
-snap-install: snap
-	sudo snap install --dangerous "$(SNAP_FILE)"
-	@echo "Installed $(SNAP_FILE)"
-
-snap-screenshot:
-	@command -v magick >/dev/null 2>&1 || { echo "imagemagick is required: sudo apt install imagemagick"; exit 1; }
-	@test -f "$(SNAP_SCREENSHOT_SRC)" || { echo "missing screenshot: $(SNAP_SCREENSHOT_SRC)"; exit 1; }
-	magick "$(SNAP_SCREENSHOT_SRC)" -quality 85 "$(SNAP_SCREENSHOT_DST)"
-	@echo "Generated store screenshot: $(SNAP_SCREENSHOT_DST) ($$(du -h "$(SNAP_SCREENSHOT_DST)" | cut -f1))"
-
-snap-publish:
-	@test -f "$(SNAP_FILE)" || { echo "no snap file found — run 'make snap' first"; exit 1; }
-	snapcraft upload "$(SNAP_FILE)" --release edge
-	@echo "Published $(SNAP_FILE) to edge channel"
 
 build-unsupported:
 	@echo "Unsupported platform: $(UNAME_S). Photograph is Linux-only (see docs/adr/0012-drop-macos-support-linux-only.md)."
@@ -131,10 +113,10 @@ install-unsupported:
 	@echo "Unsupported platform: $(UNAME_S). Photograph is Linux-only (see docs/adr/0012-drop-macos-support-linux-only.md)."
 	@exit 1
 
-clean-icons:
+clean-icons: ## Remove temporary icon build files
 	rm -rf "$(ICON_TMP_DIR)"
 
-docs:
+docs: ## Serve the docs site at http://localhost:8000
 	@command -v python3 >/dev/null 2>&1 || { echo "python3 is required"; exit 1; }
 	@echo "Serving docs at http://localhost:8000"
 	@cd docs && python3 -m http.server 8000

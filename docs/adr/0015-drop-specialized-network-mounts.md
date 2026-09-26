@@ -5,7 +5,7 @@ Note: This ADR supersedes [ADR-0013](0013-network-mounts-deb-only.md).
 
 ## Status
 
-Accepted
+Superseded by [ADR-0017](0017-discover-mounts-for-sidebar.md)
 
 ## Context
 

@@ -47,12 +47,14 @@ mechanics of adding one.
 | [0007](0007-guard-parity-tests.md) | Use parity tests with guarded fill-skip behavior | Accepted |
 | [0008](0008-drop-macos-packaging.md) | Drop macOS packaging, ship Linux .deb only | Superseded by [ADR-0011](0011-restore-macos-metal-backend.md) |
 | [0009](0009-raw-highlight-recovery.md) | Apply highlight recovery during RAW develop, before sRGB gamma | Accepted |
-| [0010](0010-snap-packaging-vulkan-gpu-2404.md) | Package for Linux via snap, using the gpu-2404 content interface for Vulkan | Accepted |
+| [0010](0010-snap-packaging-vulkan-gpu-2404.md) | Package for Linux via snap, using the gpu-2404 content interface for Vulkan | Superseded by [ADR-0016](0016-drop-snap-packaging.md) |
 | [0011](0011-restore-macos-metal-backend.md) | Restore macOS support via a Metal GPU backend | Superseded by [ADR-0012](0012-drop-macos-support-linux-only.md) |
 | [0012](0012-drop-macos-support-linux-only.md) | Drop macOS support; Photograph is Linux-only | Accepted |
 | [0013](0013-network-mounts-deb-only.md) | Network drive browsing is .deb-only; the Snap build disables it | Superseded by [ADR-0015](0015-drop-specialized-network-mounts.md) |
 | [0014](0014-unify-grid-selection-model.md) | Unify grid selection to drive fullscreen view, filmstrip, and Render targeting | Accepted |
-| [0015](0015-drop-specialized-network-mounts.md) | Drop specialized network-mount logic in favor of local mounts | Accepted |
+| [0015](0015-drop-specialized-network-mounts.md) | Drop specialized network-mount logic in favor of local mounts | Superseded by [ADR-0017](0017-discover-mounts-for-sidebar.md) |
+| [0016](0016-drop-snap-packaging.md) | Drop Snap packaging; ship Linux .deb only | Accepted |
+| [0017](0017-discover-mounts-for-sidebar.md) | Discover storage and network mounts for the sidebar | Accepted |
 
 ## Decision Relationship
 
@@ -76,4 +78,4 @@ flowchart TD
 - Future `wgpu`/driver changes require backend policy adjustments.
 - Renewed macOS demand that native alternatives (Photos, third-party RAW editors) don't cover —
   see ADR-0012 for what it would actually cost to support again.
-- Snap network-share browsing becomes a priority again — see [ADR-0015](0015-drop-specialized-network-mounts.md) for why it was dropped and the local-mount alternative.
+- Storefront discovery (App Center, Flathub) or sandboxed installs become a priority again — see [ADR-0016](0016-drop-snap-packaging.md) for why the Snap was dropped and the Flathub/APT-repo options.

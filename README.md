@@ -1,7 +1,6 @@
 # Photograph
 
 [![Ubuntu](https://img.shields.io/badge/Ubuntu-E95420?style=for-the-badge&logo=ubuntu&logoColor=white)](#ubuntu-debian-dependencies)
-[![Snap Store](https://img.shields.io/badge/Snap_Store-82BEA0?style=for-the-badge&logo=snapcraft&logoColor=white)](https://snapcraft.io/photograph)
 
 <img src="packaging/linux/photograph.svg" alt="Photograph logo" width="180" />
 
@@ -21,7 +20,7 @@ Current support intent: Ubuntu Linux only (see [ADR-0012](docs/adr/0012-drop-mac
 
 ## What It Does Today
 
-- Folder browser with thumbnail grid
+- Folder browser with thumbnail grid; sidebar lists mounted drives, ZFS pools, and network shares (NFS/SMB/sshfs/GVfs)
 - Full image viewer/editor windows (egui/eframe)
 - EXIF metadata display
 - Non-destructive edits stored as sidecar JSON (`<image>.json`)
@@ -38,21 +37,25 @@ Current support intent: Ubuntu Linux only (see [ADR-0012](docs/adr/0012-drop-mac
 
 ## Install
 
-### Linux (.deb, recommended)
+### Linux (.deb)
+
+Download the latest `.deb` from [GitHub Releases](https://github.com/divanvisagie/Photograph/releases/latest)
+and install it with apt:
+
+```bash
+sudo apt install ./photograph_*_amd64.deb
+```
+
+Or build and install the `.deb` locally via the `Makefile` (see [Packaging](#packaging)):
 
 ```bash
 sudo apt install -y dpkg-dev
 make install
 ```
 
-Builds and installs the `.deb` locally via the `Makefile` (see [Packaging](#packaging)). This is
-the primary install path.
-
-### Linux (Snap)
-
-```bash
-sudo snap install photograph
-```
+Photograph is not distributed as a Snap: strict confinement can't give a photo browser access to
+arbitrary locations like `/tank` or other custom mounts (see
+[ADR-0016](docs/adr/0016-drop-snap-packaging.md)).
 
 ### From Source
 
@@ -124,9 +127,8 @@ PHOTOGRAPH_DEBUG_ALLOW_CPU_FALLBACK=1 PHOTOGRAPH_PREVIEW_BACKEND=cpu cargo run -
 
 ## Packaging
 
-The `Makefile` builds both a `.deb` and a Snap. `make build` builds both (`make build-deb` and
-`make snap`); `make install` only installs the `.deb` (`make install-linux`, aliased from `make
-install`) — it never touches the Snap.
+The `Makefile` builds a `.deb`. `make build` builds it (`make build-deb`); `make install` builds and
+installs it (`make install-linux`, aliased from `make install`).
 
 Icon assets are derived from the SVG source at `packaging/linux/photograph.svg`:
 
@@ -139,11 +141,10 @@ This regenerates the embedded runtime PNG (`assets/photograph-icon-128.png`).
 Common targets:
 
 ```bash
-make build          # build both .deb and snap
-make build-deb      # build just the .deb
-make install        # build and install the .deb (never the snap)
-make snap           # build just the snap
-make snap-install   # build and install the snap (--dangerous, local testing)
+make                # list all targets
+make build          # build the .deb
+make build-deb      # build the .deb
+make install        # build and install the .deb
 make release        # build the .deb and publish it as a GitHub release (requires gh CLI, logged in)
 ```
 
