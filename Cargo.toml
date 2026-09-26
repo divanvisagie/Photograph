@@ -21,6 +21,7 @@ imageproc = "0.27"
 rawler = "0.7.1"
 toml = "1.1"
 rayon = "1.10"
+bytemuck = { version = "1.25", features = ["extern_crate_alloc"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wgpu = "30"

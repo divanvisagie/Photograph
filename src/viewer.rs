@@ -1,4 +1,5 @@
 use std::{
+    sync::Arc,
     collections::hash_map::DefaultHasher,
     collections::{HashMap, VecDeque},
     hash::{Hash, Hasher},
@@ -8,6 +9,7 @@ use std::{
 };
 
 use image::{DynamicImage, RgbaImage};
+use rayon::prelude::*;
 
 use crate::state::{EditState, GradFilter, Mask, Rect, Spot, Stroke};
 
@@ -18,6 +20,8 @@ const INTERACTIVE_PREVIEW_MAX: u32 = 960;
 const DEBOUNCE: Duration = Duration::from_millis(300);
 const INTERACTIVE_REFRESH: Duration = Duration::from_millis(90);
 const PREVIEW_CACHE_CAPACITY: usize = 24;
+/// Byte budget for cached rendered previews.
+const PREVIEW_CACHE_BYTES: usize = 512 * 1024 * 1024;
 
 /// Size in screen pixels for crop corner drag handles.
 const HANDLE_SIZE: f32 = 8.0;
@@ -28,20 +32,44 @@ enum BgResult {
         img: DynamicImage,
     },
     LoadFailed(PathBuf),
+    /// A rendered preview, already converted for display on the worker
+    /// thread so the UI thread only has to upload it.
     Processed {
         generation: u64,
         cache_key: PreviewCacheKey,
-        data: Vec<u8>,
-        width: usize,
-        height: usize,
+        image: Arc<egui::ColorImage>,
     },
     /// Split view's "before" image, rendered for the state with `signature`.
     Original {
         signature: u64,
-        data: Vec<u8>,
-        width: usize,
-        height: usize,
+        image: Arc<egui::ColorImage>,
     },
+}
+
+/// Converts a rendered RGBA image for display. For opaque images — every
+/// photo the pipeline produces unless the source has transparency — the
+/// bytes are already egui's `Color32` (premultiplied RGBA equals straight
+/// RGBA at alpha 255), so they're copied in bulk, in parallel, instead of
+/// converted pixel by pixel (~60ms for a 20 MP render). The buffer can't be
+/// reused outright: `Color32` is 4-byte aligned, a `Vec<u8>` isn't.
+fn color_image_from_rgba(rgba: RgbaImage) -> egui::ColorImage {
+    const CHUNK: usize = 1 << 20; // multiple of 4, so pixels never straddle chunks
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    let raw = rgba.into_raw();
+    let opaque = raw
+        .par_chunks(CHUNK)
+        .all(|chunk| chunk.chunks_exact(4).all(|p| p[3] == 255));
+    if !opaque {
+        return egui::ColorImage::from_rgba_unmultiplied(size, &raw);
+    }
+    // Zeroed by the allocator (no fill pass); the parallel copy then
+    // touches the pages from all cores at once.
+    let mut pixels: Vec<egui::Color32> = bytemuck::zeroed_vec(raw.len() / 4);
+    bytemuck::cast_slice_mut::<egui::Color32, u8>(&mut pixels)
+        .par_chunks_mut(CHUNK)
+        .zip(raw.par_chunks(CHUNK))
+        .for_each(|(dst, src)| dst.copy_from_slice(src));
+    egui::ColorImage::new(size, pixels)
 }
 
 fn scale_to_cap(img: DynamicImage, cap: u32) -> DynamicImage {
@@ -89,6 +117,9 @@ fn send_loaded_preview_stages(path: PathBuf, cap: u32, tx: &mpsc::SyncSender<BgR
     match load_preview_stages(&path, cap) {
         Ok(stages) => {
             for img in stages {
+                // Convert once here: renders then use the RGBA8 buffer
+                // directly instead of converting on every pass.
+                let img = DynamicImage::ImageRgba8(img.into_rgba8());
                 let _ = tx.send(BgResult::Loaded {
                     path: path.clone(),
                     img,
@@ -125,9 +156,7 @@ struct PreviewCacheKey {
 
 #[derive(Clone)]
 struct PreviewCacheEntry {
-    data: Vec<u8>,
-    width: usize,
-    height: usize,
+    image: Arc<egui::ColorImage>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -599,10 +628,10 @@ impl Viewer {
         self.in_flight_generation = Some(generation);
         let cache_key = self.build_preview_cache_key(&preview, quality);
 
-        if let Some(img) = self.cached_preview_image(&cache_key) {
+        if let Some(image) = self.cached_preview_image(&cache_key) {
             self.texture = Some(ctx.load_texture(
                 format!("viewer_tex_{}", self.id),
-                img,
+                egui::ImageData::Color(image),
                 egui::TextureOptions::LINEAR,
             ));
             self.processing = false;
@@ -621,15 +650,11 @@ impl Viewer {
                 ProcessQuality::Final => img,
             };
             let result = process_preview_with_backend(&source, &state, preview_backend);
-            let rgba = result.to_rgba8();
-            let w = rgba.width() as usize;
-            let h = rgba.height() as usize;
+            let image = Arc::new(color_image_from_rgba(result.into_rgba8()));
             let _ = tx.send(BgResult::Processed {
                 generation,
                 cache_key,
-                data: rgba.into_raw(),
-                width: w,
-                height: h,
+                image,
             });
             ctx2.request_repaint();
         });
@@ -658,37 +683,33 @@ impl Viewer {
         }
     }
 
-    fn cached_preview_image(&mut self, key: &PreviewCacheKey) -> Option<egui::ColorImage> {
-        let img = self.preview_cache.get(key).map(|entry| {
-            egui::ColorImage::from_rgba_unmultiplied([entry.width, entry.height], &entry.data)
-        })?;
+    fn cached_preview_image(&mut self, key: &PreviewCacheKey) -> Option<Arc<egui::ColorImage>> {
+        let image = Arc::clone(&self.preview_cache.get(key)?.image);
         self.touch_preview_cache_key(key);
-        Some(img)
+        Some(image)
     }
 
-    fn store_preview_cache(
-        &mut self,
-        key: PreviewCacheKey,
-        data: Vec<u8>,
-        width: usize,
-        height: usize,
-    ) {
-        if !self.preview_cache.contains_key(&key)
-            && self.preview_cache.len() >= PREVIEW_CACHE_CAPACITY
+    /// Caches a rendered preview, sharing the displayed image rather than
+    /// copying it. Evicts oldest-first beyond `PREVIEW_CACHE_CAPACITY`
+    /// entries or `PREVIEW_CACHE_BYTES` (full-resolution previews are ~80 MB
+    /// each, so the entry count alone could reach gigabytes).
+    fn store_preview_cache(&mut self, key: PreviewCacheKey, image: Arc<egui::ColorImage>) {
+        self.preview_cache.insert(key.clone(), PreviewCacheEntry { image });
+        self.touch_preview_cache_key(&key);
+        let bytes = |cache: &HashMap<PreviewCacheKey, PreviewCacheEntry>| -> usize {
+            cache.values().map(|e| e.image.pixels.len() * 4).sum()
+        };
+        while self.preview_cache.len() > 1
+            && (self.preview_cache.len() > PREVIEW_CACHE_CAPACITY
+                || bytes(&self.preview_cache) > PREVIEW_CACHE_BYTES)
         {
-            if let Some(oldest) = self.preview_cache_lru.pop_front() {
-                self.preview_cache.remove(&oldest);
+            match self.preview_cache_lru.pop_front() {
+                Some(oldest) => {
+                    self.preview_cache.remove(&oldest);
+                }
+                None => break,
             }
         }
-        self.preview_cache.insert(
-            key.clone(),
-            PreviewCacheEntry {
-                data,
-                width,
-                height,
-            },
-        );
-        self.touch_preview_cache_key(&key);
     }
 
     fn touch_preview_cache_key(&mut self, key: &PreviewCacheKey) {
@@ -721,35 +742,25 @@ impl Viewer {
                 BgResult::Processed {
                     generation,
                     cache_key,
-                    data,
-                    width: w,
-                    height: h,
+                    image,
                 } => {
                     self.processing = false;
                     self.in_flight_generation = None;
-                    self.store_preview_cache(cache_key, data.clone(), w, h);
+                    self.store_preview_cache(cache_key, Arc::clone(&image));
                     if generation != self.requested_generation {
                         continue;
                     }
-                    let img = egui::ColorImage::from_rgba_unmultiplied([w, h], &data);
                     self.texture = Some(ctx.load_texture(
                         format!("viewer_tex_{}", self.id),
-                        img,
+                        egui::ImageData::Color(image),
                         egui::TextureOptions::LINEAR,
                     ));
                 }
-                BgResult::Original {
-                    signature,
-                    data,
-                    width,
-                    height,
-                } => {
+                BgResult::Original { signature, image } => {
                     // Drop renders for a state that's since changed.
                     if self.original_in_flight == Some(signature) {
                         self.original_in_flight = None;
-                        if let Some(rgba) = RgbaImage::from_raw(width as u32, height as u32, data) {
-                            self.set_original_texture(ctx, signature, rgba);
-                        }
+                        self.set_original_texture(ctx, signature, image);
                     }
                 }
             }
@@ -800,7 +811,8 @@ impl Viewer {
         if !crate::processing::gpu_pipeline::has_geometry(&state) {
             // Nothing to apply (no geometry, or showing the original crop):
             // the "before" image is the preview itself.
-            self.set_original_texture(ctx, signature, preview.to_rgba8());
+            let image = Arc::new(color_image_from_rgba(preview.to_rgba8()));
+            self.set_original_texture(ctx, signature, image);
             return;
         }
         self.original_in_flight = Some(signature);
@@ -808,24 +820,22 @@ impl Viewer {
         let tx = self.tx.clone();
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
-            let rgba = process_preview_with_backend(&preview, &state, preview_backend).to_rgba8();
-            let (width, height) = (rgba.width() as usize, rgba.height() as usize);
-            let _ = tx.send(BgResult::Original {
-                signature,
-                data: rgba.into_raw(),
-                width,
-                height,
-            });
+            let result = process_preview_with_backend(&preview, &state, preview_backend);
+            let image = Arc::new(color_image_from_rgba(result.into_rgba8()));
+            let _ = tx.send(BgResult::Original { signature, image });
             ctx2.request_repaint();
         });
     }
 
-    fn set_original_texture(&mut self, ctx: &egui::Context, signature: u64, rgba: RgbaImage) {
-        let size = [rgba.width() as usize, rgba.height() as usize];
-        let img = egui::ColorImage::from_rgba_unmultiplied(size, &rgba.into_raw());
+    fn set_original_texture(
+        &mut self,
+        ctx: &egui::Context,
+        signature: u64,
+        image: Arc<egui::ColorImage>,
+    ) {
         self.original_texture = Some(ctx.load_texture(
             format!("viewer_orig_{}", self.id),
-            img,
+            egui::ImageData::Color(image),
             egui::TextureOptions::LINEAR,
         ));
         self.original_rendered = Some(signature);
@@ -3700,6 +3710,23 @@ mod tests {
         let mut v = super::Viewer::new(0, PreviewBackend::Auto);
         v.set_crop_mode(true);
         assert!(!v.needs_process);
+    }
+
+    #[test]
+    fn fast_display_conversion_matches_egui_for_opaque_and_transparent() {
+        let opaque = image::RgbaImage::from_fn(37, 23, |x, y| {
+            Rgba([(x * 7) as u8, (y * 11) as u8, (x * y) as u8, 255])
+        });
+        let fast = super::color_image_from_rgba(opaque.clone());
+        let egui_way = egui::ColorImage::from_rgba_unmultiplied([37, 23], opaque.as_raw());
+        assert_eq!(fast.pixels, egui_way.pixels);
+        assert_eq!(fast.size, [37, 23]);
+
+        let mut transparent = opaque.clone();
+        transparent.get_pixel_mut(3, 4).0[3] = 100;
+        let fast = super::color_image_from_rgba(transparent.clone());
+        let egui_way = egui::ColorImage::from_rgba_unmultiplied([37, 23], transparent.as_raw());
+        assert_eq!(fast.pixels, egui_way.pixels, "non-opaque images get egui's premultiplication");
     }
 
     #[test]

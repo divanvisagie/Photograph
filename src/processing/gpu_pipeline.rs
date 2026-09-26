@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use std::sync::{
     OnceLock,
     atomic::{AtomicBool, Ordering},
@@ -176,9 +177,18 @@ pub fn try_apply(img: &DynamicImage, state: &EditState) -> Option<DynamicImage> 
         return Some(img.clone());
     }
 
-    let rgba = img.to_rgba8();
+    // Previews are kept as RGBA8 (converted once at load), so this usually
+    // borrows instead of copying the whole image each render.
+    let converted;
+    let rgba = match img.as_rgba8() {
+        Some(rgba) => rgba,
+        None => {
+            converted = img.to_rgba8();
+            &converted
+        }
+    };
     if rgba.width() == 0 || rgba.height() == 0 {
-        return Some(DynamicImage::ImageRgba8(rgba));
+        return Some(DynamicImage::ImageRgba8(rgba.clone()));
     }
 
     // Guard against images exceeding device texture limits (important for export).
@@ -187,7 +197,7 @@ pub fn try_apply(img: &DynamicImage, state: &EditState) -> Option<DynamicImage> 
         return None;
     }
 
-    apply_gpu(&rgba, state).map(DynamicImage::ImageRgba8)
+    apply_gpu(rgba, state).map(DynamicImage::ImageRgba8)
 }
 
 /// Returns whether the GPU preview path is available.
@@ -967,12 +977,11 @@ fn apply_gpu(src: &RgbaImage, state: &EditState) -> Option<RgbaImage> {
     let unpadded = unpadded_bytes_per_row as usize;
     let padded = padded_bytes_per_row as usize;
     let mut out = vec![0_u8; unpadded * (out_h as usize)];
-    for row in 0..out_h as usize {
-        let src_offset = row * padded;
-        let dst_offset = row * unpadded;
-        out[dst_offset..dst_offset + unpadded]
-            .copy_from_slice(&mapped[src_offset..src_offset + unpadded]);
-    }
+    // Strip row padding, rows in parallel: a single-threaded copy of a
+    // full-resolution readback took ~35ms.
+    out.par_chunks_mut(unpadded)
+        .zip(mapped[..].par_chunks(padded))
+        .for_each(|(dst, src)| dst.copy_from_slice(&src[..unpadded]));
     drop(mapped);
     readback.unmap();
 

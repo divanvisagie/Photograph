@@ -3317,6 +3317,7 @@ name = "photograph"
 version = "0.4.1"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "dirs",
  "eframe",
  "egui",
