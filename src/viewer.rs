@@ -82,57 +82,55 @@ fn scale_to_cap(img: DynamicImage, cap: u32) -> DynamicImage {
     }
 }
 
-fn load_preview_stages_with_hooks<FPreview, FFull>(
+/// Loads a photo's preview and hands it to `send`.
+///
+/// RAWs are shown as their RAW develop only. The camera's embedded JPEG
+/// would be ready sooner, but it has the camera's own contrast and color,
+/// so swapping it for the flat develop a moment later reads as a flash; it's
+/// only used if the develop fails. Other formats use their quick preview.
+fn load_preview_with_hooks<FPreview, FFull, FSend>(
     path: &Path,
     cap: u32,
     open_preview_with_source: FPreview,
     open_full: FFull,
-) -> anyhow::Result<Vec<DynamicImage>>
+    mut send: FSend,
+) -> anyhow::Result<()>
 where
     FPreview: Fn(&Path) -> anyhow::Result<(DynamicImage, crate::thumbnail::PreviewSource)>,
     FFull: Fn(&Path) -> anyhow::Result<DynamicImage>,
+    FSend: FnMut(DynamicImage),
 {
-    let (img, source) = open_preview_with_source(path)?;
-    let mut stages = vec![scale_to_cap(img, cap)];
-
-    // For RAW files loaded from embedded preview payloads, schedule
-    // a second-stage full decode to converge toward full-quality preview.
-    if crate::thumbnail::is_raw_image(path) && source == crate::thumbnail::PreviewSource::Embedded {
+    if crate::thumbnail::is_raw_image(path) {
         if let Ok(full) = open_full(path) {
-            stages.push(scale_to_cap(full, cap));
+            send(scale_to_cap(full, cap));
+            return Ok(());
         }
     }
-
-    Ok(stages)
+    let (img, _source) = open_preview_with_source(path)?;
+    send(scale_to_cap(img, cap));
+    Ok(())
 }
 
-fn load_preview_stages(path: &Path, cap: u32) -> anyhow::Result<Vec<DynamicImage>> {
-    load_preview_stages_with_hooks(
-        path,
+fn send_loaded_preview(path: PathBuf, cap: u32, tx: &mpsc::SyncSender<BgResult>) {
+    let result = load_preview_with_hooks(
+        &path,
         cap,
         crate::thumbnail::open_image_for_preview_with_source,
-        // The RAW develop stage only needs preview size: develop straight to
-        // `cap` instead of full resolution.
+        // The RAW develop only needs preview size: develop straight to `cap`
+        // instead of full resolution.
         |path| crate::thumbnail::open_raw_for_preview(path, cap),
-    )
-}
-
-fn send_loaded_preview_stages(path: PathBuf, cap: u32, tx: &mpsc::SyncSender<BgResult>) {
-    match load_preview_stages(&path, cap) {
-        Ok(stages) => {
-            for img in stages {
-                // Convert once here: renders then use the RGBA8 buffer
-                // directly instead of converting on every pass.
-                let img = DynamicImage::ImageRgba8(img.into_rgba8());
-                let _ = tx.send(BgResult::Loaded {
-                    path: path.clone(),
-                    img,
-                });
-            }
-        }
-        Err(_) => {
-            let _ = tx.send(BgResult::LoadFailed(path));
-        }
+        |img| {
+            // Convert once here: renders then use the RGBA8 buffer directly
+            // instead of converting on every pass.
+            let img = DynamicImage::ImageRgba8(img.into_rgba8());
+            let _ = tx.send(BgResult::Loaded {
+                path: path.clone(),
+                img,
+            });
+        },
+    );
+    if result.is_err() {
+        let _ = tx.send(BgResult::LoadFailed(path));
     }
 }
 
@@ -658,7 +656,7 @@ impl Viewer {
         let ctx2 = ctx.clone();
         let cap = self.preview_max;
         std::thread::spawn(move || {
-            send_loaded_preview_stages(path, cap, &tx);
+            send_loaded_preview(path, cap, &tx);
             ctx2.request_repaint();
         });
     }
@@ -1009,7 +1007,7 @@ impl Viewer {
                     let path = self.current_path.clone().unwrap();
                     let cap = self.preview_max;
                     std::thread::spawn(move || {
-                        send_loaded_preview_stages(path, cap, &tx);
+                        send_loaded_preview(path, cap, &tx);
                         ctx2.request_repaint();
                     });
                 } else {
@@ -3327,7 +3325,7 @@ mod tests {
         CropAspect, DragTarget, HANDLE_SIZE, INTERACTIVE_PREVIEW_MAX, PreviewBackend, SpotHandle,
         SourceProjection, spot_hit_test,
         bump_requested_generation_for_pending_changes, crop_hit_target, downscale_for_interactive,
-        anchored_rect, constrain_aspect, edit_state_signature, load_preview_stages_with_hooks,
+        anchored_rect, constrain_aspect, edit_state_signature, load_preview_with_hooks,
         resize_from_corner, resize_from_edge,
         process_preview_with_backend_and_gpu_hook, source_signature,
     };
@@ -3994,76 +3992,58 @@ mod tests {
         assert_eq!(source_signature(path), source_signature(path));
     }
 
-    #[test]
-    fn raw_embedded_preview_adds_full_quality_stage() {
-        let path = Path::new("/tmp/test.raf");
-        let out = load_preview_stages_with_hooks(
-            path,
-            2000,
-            |_path| {
-                Ok((
-                    DynamicImage::ImageRgba8(ImageBuffer::from_pixel(1200, 800, Rgba([1, 2, 3, 255]))),
-                    crate::thumbnail::PreviewSource::Embedded,
-                ))
-            },
-            |_path| {
-                Ok(DynamicImage::ImageRgba8(ImageBuffer::from_pixel(
-                    4000,
-                    3000,
-                    Rgba([9, 9, 9, 255]),
-                )))
-            },
-        )
-        .expect("staged preview load should succeed");
+    /// Runs the preview loader for `path` with fake decoders and collects
+    /// what it sends.
+    fn loaded<FP, FF>(path: &str, open_preview: FP, open_full: FF) -> anyhow::Result<Vec<DynamicImage>>
+    where
+        FP: Fn(&Path) -> anyhow::Result<(DynamicImage, crate::thumbnail::PreviewSource)>,
+        FF: Fn(&Path) -> anyhow::Result<DynamicImage>,
+    {
+        let mut out = Vec::new();
+        load_preview_with_hooks(Path::new(path), 2000, open_preview, open_full, |img| {
+            out.push(img)
+        })?;
+        Ok(out)
+    }
 
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].width(), 1200);
-        assert_eq!(out[0].height(), 800);
-        assert_eq!(out[1].width(), 2000);
-        assert_eq!(out[1].height(), 1500);
+    fn solid(w: u32, h: u32, v: u8) -> DynamicImage {
+        DynamicImage::ImageRgba8(ImageBuffer::from_pixel(w, h, Rgba([v, v, v, 255])))
     }
 
     #[test]
-    fn raw_full_preview_source_does_not_add_second_stage() {
-        let path = Path::new("/tmp/test.raf");
-        let out = load_preview_stages_with_hooks(
-            path,
-            2000,
-            |_path| {
-                Ok((
-                    DynamicImage::ImageRgba8(ImageBuffer::from_pixel(1800, 1200, Rgba([1, 2, 3, 255]))),
-                    crate::thumbnail::PreviewSource::FullDevelop,
-                ))
-            },
-            |_path| {
-                panic!("full decode should not run when preview source is already full quality")
-            },
+    fn raws_show_only_their_develop_not_the_embedded_jpeg() {
+        let out = loaded(
+            "/tmp/test.raf",
+            |_| panic!("the embedded JPEG isn't needed when the develop succeeds"),
+            |_| Ok(solid(4000, 3000, 9)),
         )
-        .expect("staged preview load should succeed");
-
+        .unwrap();
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].width(), 1800);
-        assert_eq!(out[0].height(), 1200);
+        assert_eq!((out[0].width(), out[0].height()), (2000, 1500), "scaled to the cap");
     }
 
     #[test]
-    fn raw_embedded_preview_keeps_first_stage_if_full_decode_fails() {
-        let path = Path::new("/tmp/test.raf");
-        let out = load_preview_stages_with_hooks(
-            path,
-            2000,
-            |_path| {
-                Ok((
-                    DynamicImage::ImageRgba8(ImageBuffer::from_pixel(1600, 1066, Rgba([1, 2, 3, 255]))),
-                    crate::thumbnail::PreviewSource::Embedded,
-                ))
-            },
-            |_path| anyhow::bail!("full decode failed"),
+    fn raws_fall_back_to_the_embedded_jpeg_if_the_develop_fails() {
+        let out = loaded(
+            "/tmp/test.raf",
+            |_| Ok((solid(1600, 1066, 1), crate::thumbnail::PreviewSource::Embedded)),
+            |_| anyhow::bail!("develop failed"),
         )
-        .expect("staged preview load should keep embedded stage");
-
+        .unwrap();
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].width(), 1600);
-        assert_eq!(out[0].height(), 1066);
+        assert_eq!((out[0].width(), out[0].height()), (1600, 1066));
     }
+
+    #[test]
+    fn other_formats_use_their_quick_preview_only() {
+        let out = loaded(
+            "/tmp/test.jpg",
+            |_| Ok((solid(800, 600, 1), crate::thumbnail::PreviewSource::FullDevelop)),
+            |_| panic!("no RAW develop for a JPEG"),
+        )
+        .unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].width(), out[0].height()), (800, 600));
+    }
+
 }
