@@ -7,7 +7,9 @@
 //! resolution; this module is the one definition of that shape, shared by
 //! the editor overlay and (from step 2) the CPU and GPU pipelines.
 
-use crate::state::{Mask, Stroke};
+use image::{DynamicImage, GrayImage, RgbaImage};
+
+use crate::state::{EditState, Mask, Stroke};
 
 /// Longest side, in pixels, masks are rasterized at before being scaled to
 /// the image. Masks are soft, so this loses nothing visible and keeps the
@@ -134,6 +136,95 @@ fn apply_stroke(
     }
 }
 
+/// Whether `mask` changes anything: it has paint and a non-neutral adjustment.
+pub fn is_active(mask: &Mask) -> bool {
+    mask.strokes.iter().any(|s| !s.erase) && mask.adjust != Default::default()
+}
+
+pub fn any_active(state: &EditState) -> bool {
+    state.masks.iter().any(is_active)
+}
+
+/// An edit state carrying only `mask`'s adjustments, so the global color
+/// code (CPU and GPU) computes what the mask applies.
+pub fn adjust_state(mask: &Mask) -> EditState {
+    let a = &mask.adjust;
+    EditState {
+        exposure: a.exposure,
+        contrast: a.contrast,
+        highlights: a.highlights,
+        shadows: a.shadows,
+        temperature: a.temperature,
+        saturation: a.saturation,
+        hue_shift: a.hue_shift,
+        selective_color: a.selective_color.clone(),
+        ..EditState::default()
+    }
+}
+
+/// `mask`'s coverage in output space, for a `src_w`×`src_h` source edited
+/// with `state`'s geometry: rasterized in source space at a capped size,
+/// scaled to the source, then run through the same geometry as the image
+/// (`transform::apply_geometry`). Both the CPU and GPU pipelines use this,
+/// so their coverage is identical.
+pub fn output_coverage(mask: &Mask, state: &EditState, src_w: u32, src_h: u32) -> GrayImage {
+    let aspect = src_w as f32 / src_h.max(1) as f32;
+    let (rw, rh) = raster_size(aspect, MASK_RASTER_MAX.min(src_w.max(src_h)).max(1));
+    let raster = rasterize(mask, rw, rh);
+    let small = GrayImage::from_fn(rw, rh, |x, y| {
+        image::Luma([(raster[(y * rw + x) as usize] * 255.0).round() as u8])
+    });
+    let full = image::imageops::resize(&small, src_w, src_h, image::imageops::FilterType::Triangle);
+    if !crate::processing::gpu_pipeline::has_geometry(state) {
+        return full;
+    }
+    // Geometry works on RGBA; out-of-frame fill is black, i.e. no coverage.
+    let rgba = RgbaImage::from_fn(src_w, src_h, |x, y| {
+        let v = full.get_pixel(x, y).0[0];
+        image::Rgba([v, v, v, 255])
+    });
+    let warped = crate::processing::transform::apply_geometry(DynamicImage::ImageRgba8(rgba), state);
+    warped.to_luma8()
+}
+
+/// Applies every active mask to `img` (CPU path; output space, after the
+/// global color stage). Each mask runs the global color code with its own
+/// adjustments and is blended in by its coverage, in order.
+pub fn apply(img: DynamicImage, state: &EditState, src_w: u32, src_h: u32) -> DynamicImage {
+    if !any_active(state) {
+        return img;
+    }
+    let mut out = img.to_rgba8();
+    for mask in state.masks.iter().filter(|m| is_active(m)) {
+        let coverage = output_coverage(mask, state, src_w, src_h);
+        if coverage.dimensions() != out.dimensions() {
+            continue;
+        }
+        let ms = adjust_state(mask);
+        let adjusted = super::color::apply(
+            super::exposure::apply(DynamicImage::ImageRgba8(out.clone()), &ms),
+            &ms,
+        )
+        .to_rgba8();
+        blend(&mut out, &adjusted, &coverage);
+    }
+    DynamicImage::ImageRgba8(out)
+}
+
+/// `base = base + (adjusted − base) × coverage`, per channel.
+fn blend(base: &mut RgbaImage, adjusted: &RgbaImage, coverage: &GrayImage) {
+    for ((b, a), c) in base.pixels_mut().zip(adjusted.pixels()).zip(coverage.pixels()) {
+        let t = c.0[0] as f32 / 255.0;
+        if t <= 0.0 {
+            continue;
+        }
+        for i in 0..3 {
+            let (bv, av) = (b.0[i] as f32 / 255.0, a.0[i] as f32 / 255.0);
+            b.0[i] = ((bv + (av - bv) * t) * 255.0).round() as u8;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +249,73 @@ mod tests {
 
     fn at(c: &[f32], w: u32, x: u32, y: u32) -> f32 {
         c[(y * w + x) as usize]
+    }
+
+    fn gray(v: u8) -> DynamicImage {
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(80, 60, image::Rgba([v, v, v, 255])))
+    }
+
+    fn brightening_mask(strokes: Vec<Stroke>) -> Mask {
+        Mask {
+            name: "m".into(),
+            strokes,
+            adjust: MaskAdjust {
+                exposure: 1.0,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn mask_adjusts_inside_its_paint_and_nothing_outside() {
+        let mut state = EditState::default();
+        state.masks.push(brightening_mask(vec![stroke(&[[0.25, 0.5]], 0.15, 0.0, false)]));
+        let out = apply(gray(80), &state, 80, 60).to_rgba8();
+        assert!(out.get_pixel(20, 30).0[0] > 150, "painted area is brightened");
+        assert_eq!(out.get_pixel(70, 30).0, [80, 80, 80, 255], "unpainted area untouched");
+    }
+
+    #[test]
+    fn erased_paint_reverts_to_the_unmasked_image() {
+        let mut state = EditState::default();
+        state.masks.push(brightening_mask(vec![
+            stroke(&[[0.25, 0.5], [0.75, 0.5]], 0.15, 0.0, false),
+            stroke(&[[0.75, 0.5]], 0.2, 0.0, true),
+        ]));
+        let out = apply(gray(80), &state, 80, 60).to_rgba8();
+        assert!(out.get_pixel(20, 30).0[0] > 150);
+        assert_eq!(out.get_pixel(60, 30).0[0], 80);
+    }
+
+    #[test]
+    fn neutral_or_empty_masks_are_inactive() {
+        let neutral = Mask {
+            name: "m".into(),
+            strokes: vec![stroke(&[[0.5, 0.5]], 0.1, 0.5, false)],
+            adjust: MaskAdjust::default(),
+        };
+        assert!(!is_active(&neutral));
+        assert!(!is_active(&brightening_mask(vec![])));
+        assert!(is_active(&brightening_mask(vec![stroke(&[[0.5, 0.5]], 0.1, 0.5, false)])));
+    }
+
+    #[test]
+    fn coverage_follows_geometry_into_output_space() {
+        let mut state = EditState::default();
+        let mask = brightening_mask(vec![stroke(&[[0.1, 0.5]], 0.1, 0.0, false)]);
+        // Unrotated: paint near the left edge.
+        let c = output_coverage(&mask, &state, 80, 60);
+        assert!(c.get_pixel(8, 30).0[0] > 200 && c.get_pixel(72, 30).0[0] == 0);
+        // Rotated 180°: the paint moves to the right edge.
+        state.rotate = 180;
+        let c = output_coverage(&mask, &state, 80, 60);
+        assert!(c.get_pixel(71, 29).0[0] > 200 && c.get_pixel(8, 30).0[0] == 0);
+        // Cropped to the right half: the paint is cropped away entirely.
+        state.rotate = 0;
+        state.crop = Some(crate::state::Rect { x: 0.5, y: 0.0, width: 0.5, height: 1.0 });
+        let c = output_coverage(&mask, &state, 80, 60);
+        assert_eq!(c.dimensions(), (40, 60));
+        assert!(c.pixels().all(|p| p.0[0] == 0));
     }
 
     #[test]

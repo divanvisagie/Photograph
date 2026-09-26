@@ -23,6 +23,7 @@ struct GpuContext {
     color: PipelineBundle,
     geometry: OnceLock<PipelineBundle>,
     spots: OnceLock<PipelineBundle>,
+    mask_blend: OnceLock<PipelineBundle>,
     blur_h: OnceLock<PipelineBundle>,
     blur_v_usm: OnceLock<PipelineBundle>,
     adapter_name: String,
@@ -58,6 +59,30 @@ impl GpuContext {
                 SPOTS_SHADER_SRC,
                 &[tex, out, spots_buffer],
             )
+        })
+    }
+
+    fn mask_blend(&self) -> &PipelineBundle {
+        self.mask_blend.get_or_init(|| {
+            let texture = |binding| wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            };
+            let [_, out, uniform] = tex_storage_uniform_entries();
+            let entries = [
+                texture(0),
+                texture(1),
+                texture(2),
+                wgpu::BindGroupLayoutEntry { binding: 3, ..out },
+                wgpu::BindGroupLayoutEntry { binding: 4, ..uniform },
+            ];
+            create_pipeline_bundle(&self.device, "gpu_mask_blend", MASK_BLEND_SHADER_SRC, &entries)
         })
     }
 
@@ -238,6 +263,7 @@ fn has_gpu_adjustments(state: &EditState) -> bool {
         || state.sharpness > STATE_EPS
         || has_geometry(state)
         || !state.spots.is_empty()
+        || super::masks::any_active(state)
 }
 
 /// Compute output dimensions after geometry transforms (rotation + crop).
@@ -630,12 +656,10 @@ fn apply_gpu(src: &RgbaImage, state: &EditState) -> Option<RgbaImage> {
     // Keep color_input_texture alive (it owns the GPU memory)
     let _color_input_texture = color_input_texture;
 
-    // Color output — needs TEXTURE_BINDING when sharpness follows
-    let color_out_usage = if needs_sharpness {
-        wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING
-    } else {
-        wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC
-    };
+    // Color output — read by mask and sharpness passes, or copied out last
+    let color_out_usage = wgpu::TextureUsages::STORAGE_BINDING
+        | wgpu::TextureUsages::TEXTURE_BINDING
+        | wgpu::TextureUsages::COPY_SRC;
     let color_out_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("gpu_pipeline_color_out"),
         size: out_extent,
@@ -647,83 +671,136 @@ fn apply_gpu(src: &RgbaImage, state: &EditState) -> Option<RgbaImage> {
         view_formats: &[],
     });
 
-    // Build color params uniform (uses output dimensions)
-    let (grad_enabled, grad_top, grad_bottom, grad_exposure) = state
-        .graduated_filter
-        .as_ref()
-        .and_then(|grad| {
-            let top = grad.top.clamp(0.0, 1.0);
-            let bottom = grad.bottom.clamp(0.0, 1.0);
-            if grad.exposure.abs() <= STATE_EPS || bottom <= top + 0.0001 {
-                None
-            } else {
-                Some((1.0_f32, top, bottom, grad.exposure.clamp(-5.0, 5.0)))
-            }
-        })
-        .unwrap_or((0.0, 0.0, 1.0, 0.0));
-
-    let mut params: [f32; 40] = [0.0; 40];
-    params[0] = out_w as f32;
-    params[1] = out_h as f32;
-    params[2] = state.exposure;
-    params[3] = state.contrast;
-    params[4] = state.highlights;
-    params[5] = state.shadows;
-    params[6] = state.temperature;
-    params[7] = state.saturation;
-    params[8] = state.hue_shift;
-    params[9] = grad_enabled;
-    params[10] = grad_top;
-    params[11] = grad_bottom;
-    params[12] = grad_exposure;
-    for (i, adj) in state.selective_color.iter().enumerate() {
-        params[16 + i * 3] = adj.hue;
-        params[16 + i * 3 + 1] = adj.saturation;
-        params[16 + i * 3 + 2] = adj.lightness;
-    }
-    let color_params_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("gpu_pipeline_color_params"),
-        size: std::mem::size_of_val(&params) as u64,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    ctx.queue
-        .write_buffer(&color_params_buffer, 0, f32s_as_bytes(&params));
-
     let color_out_view = color_out_texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let color_bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("gpu_pipeline_color_bg"),
-        layout: &ctx.color.bgl,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&color_input_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&color_out_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: color_params_buffer.as_entire_binding(),
-            },
-        ],
-    });
+    run_color_pass(
+        ctx,
+        &mut encoder,
+        &color_input_view,
+        &color_out_view,
+        &color_params(state, out_w, out_h, true),
+        out_w,
+        out_h,
+    );
 
-    // Color pass
-    {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("gpu_pipeline_color_pass"),
-            timestamp_writes: None,
-        });
-        pass.set_pipeline(&ctx.color.pipeline);
-        pass.set_bind_group(0, &color_bind_group, &[]);
-        pass.dispatch_workgroups(
-            out_w.div_ceil(WORKGROUP_SIZE),
-            out_h.div_ceil(WORKGROUP_SIZE),
-            1,
-        );
-    }
+    // Painted masks (ADR-0019): per mask, the color pass with the mask's
+    // adjustments, then a blend by its coverage. Coverage comes from the
+    // shared CPU helper, so it's identical to the CPU path.
+    let (color_out_texture, color_out_view) = {
+        let mut current = (color_out_texture, color_out_view);
+        for mask in state.masks.iter().filter(|m| super::masks::is_active(m)) {
+            let mut coverage = super::masks::output_coverage(mask, state, src_w, src_h);
+            if coverage.dimensions() != (out_w, out_h) {
+                coverage = image::imageops::resize(
+                    &coverage,
+                    out_w,
+                    out_h,
+                    image::imageops::FilterType::Triangle,
+                );
+            }
+            let coverage_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("gpu_pipeline_mask_coverage"),
+                size: out_extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            ctx.queue.write_texture(
+                coverage_texture.as_image_copy(),
+                coverage.as_raw(),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(out_w),
+                    rows_per_image: Some(out_h),
+                },
+                out_extent,
+            );
+            let coverage_view =
+                coverage_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+            let intermediate = |label| {
+                ctx.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: out_extent,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::STORAGE_BINDING
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                })
+            };
+            let adjusted = intermediate("gpu_pipeline_mask_adjusted");
+            let adjusted_view = adjusted.create_view(&wgpu::TextureViewDescriptor::default());
+            let mask_state = super::masks::adjust_state(mask);
+            run_color_pass(
+                ctx,
+                &mut encoder,
+                &current.1,
+                &adjusted_view,
+                &color_params(&mask_state, out_w, out_h, false),
+                out_w,
+                out_h,
+            );
+
+            let blended = intermediate("gpu_pipeline_mask_blended");
+            let blended_view = blended.create_view(&wgpu::TextureViewDescriptor::default());
+            let dims: [f32; 4] = [out_w as f32, out_h as f32, 0.0, 0.0];
+            let dims_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("gpu_pipeline_mask_blend_params"),
+                size: std::mem::size_of_val(&dims) as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            ctx.queue.write_buffer(&dims_buffer, 0, f32s_as_bytes(&dims));
+            let bundle = ctx.mask_blend();
+            let bg = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("gpu_pipeline_mask_blend_bg"),
+                layout: &bundle.bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&current.1),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&adjusted_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&coverage_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&blended_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: dims_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("gpu_pipeline_mask_blend_pass"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&bundle.pipeline);
+                pass.set_bind_group(0, &bg, &[]);
+                pass.dispatch_workgroups(
+                    out_w.div_ceil(WORKGROUP_SIZE),
+                    out_h.div_ceil(WORKGROUP_SIZE),
+                    1,
+                );
+            }
+            current = (blended, blended_view);
+        }
+        current
+    };
 
     // Sharpness passes (using output dimensions)
     let final_texture = if needs_sharpness {
@@ -906,6 +983,91 @@ fn apply_gpu(src: &RgbaImage, state: &EditState) -> Option<RgbaImage> {
     output
 }
 
+/// The color shader's uniform for `state` at `width`×`height`. The
+/// graduated filter is included only for the global pass; masks don't
+/// carry one.
+fn color_params(state: &EditState, width: u32, height: u32, with_grad: bool) -> [f32; 40] {
+    let (grad_enabled, grad_top, grad_bottom, grad_exposure) = state
+        .graduated_filter
+        .as_ref()
+        .filter(|_| with_grad)
+        .and_then(|grad| {
+            let top = grad.top.clamp(0.0, 1.0);
+            let bottom = grad.bottom.clamp(0.0, 1.0);
+            if grad.exposure.abs() <= STATE_EPS || bottom <= top + 0.0001 {
+                None
+            } else {
+                Some((1.0_f32, top, bottom, grad.exposure.clamp(-5.0, 5.0)))
+            }
+        })
+        .unwrap_or((0.0, 0.0, 1.0, 0.0));
+
+    let mut params: [f32; 40] = [0.0; 40];
+    params[0] = width as f32;
+    params[1] = height as f32;
+    params[2] = state.exposure;
+    params[3] = state.contrast;
+    params[4] = state.highlights;
+    params[5] = state.shadows;
+    params[6] = state.temperature;
+    params[7] = state.saturation;
+    params[8] = state.hue_shift;
+    params[9] = grad_enabled;
+    params[10] = grad_top;
+    params[11] = grad_bottom;
+    params[12] = grad_exposure;
+    for (i, adj) in state.selective_color.iter().enumerate() {
+        params[16 + i * 3] = adj.hue;
+        params[16 + i * 3 + 1] = adj.saturation;
+        params[16 + i * 3 + 2] = adj.lightness;
+    }
+    params
+}
+
+/// Records one color pass from `input` to `output` with `params`.
+fn run_color_pass(
+    ctx: &GpuContext,
+    encoder: &mut wgpu::CommandEncoder,
+    input: &wgpu::TextureView,
+    output: &wgpu::TextureView,
+    params: &[f32; 40],
+    width: u32,
+    height: u32,
+) {
+    let params_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("gpu_pipeline_color_params"),
+        size: std::mem::size_of_val(params) as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    ctx.queue.write_buffer(&params_buffer, 0, f32s_as_bytes(params));
+    let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("gpu_pipeline_color_bg"),
+        layout: &ctx.color.bgl,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(input),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(output),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: params_buffer.as_entire_binding(),
+            },
+        ],
+    });
+    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some("gpu_pipeline_color_pass"),
+        timestamp_writes: None,
+    });
+    pass.set_pipeline(&ctx.color.pipeline);
+    pass.set_bind_group(0, &bind_group, &[]);
+    pass.dispatch_workgroups(width.div_ceil(WORKGROUP_SIZE), height.div_ceil(WORKGROUP_SIZE), 1);
+}
+
 fn gpu_context() -> Option<&'static GpuContext> {
     GPU_CONTEXT.get_or_init(init_gpu_context).as_ref()
 }
@@ -1041,6 +1203,7 @@ fn init_gpu_context() -> Option<GpuContext> {
         color,
         geometry: OnceLock::new(),
         spots: OnceLock::new(),
+        mask_blend: OnceLock::new(),
         blur_h: OnceLock::new(),
         blur_v_usm: OnceLock::new(),
         adapter_name,
@@ -1525,6 +1688,41 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
+/// Mask blend: `base + (adjusted − base) × coverage`, keeping base alpha.
+/// Mirrors `processing::masks::blend`.
+const MASK_BLEND_SHADER_SRC: &str = r#"
+struct Dims {
+    width: f32,
+    height: f32,
+    _pad0: f32,
+    _pad1: f32,
+}
+
+@group(0) @binding(0)
+var base_tex: texture_2d<f32>;
+@group(0) @binding(1)
+var adjusted_tex: texture_2d<f32>;
+@group(0) @binding(2)
+var coverage_tex: texture_2d<f32>;
+@group(0) @binding(3)
+var dst_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(4)
+var<uniform> dims: Dims;
+
+@compute @workgroup_size(16, 16, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (f32(gid.x) >= dims.width || f32(gid.y) >= dims.height) {
+        return;
+    }
+    let coord = vec2<i32>(i32(gid.x), i32(gid.y));
+    let base = textureLoad(base_tex, coord, 0);
+    let adjusted = textureLoad(adjusted_tex, coord, 0);
+    let t = textureLoad(coverage_tex, coord, 0).r;
+    let rgb = base.rgb + (adjusted.rgb - base.rgb) * t;
+    textureStore(dst_tex, coord, vec4<f32>(rgb, base.a));
+}
+"#;
+
 const BLUR_H_SHADER_SRC: &str = r#"
 struct BlurParams {
     width: f32,
@@ -1960,6 +2158,95 @@ mod tests {
             .expect("gpu apply should succeed for spots + geometry + color")
             .to_rgba8();
         assert_rgba_close(&cpu, &gpu, 1);
+    }
+
+    fn mask(strokes: Vec<crate::state::Stroke>, adjust: crate::state::MaskAdjust) -> crate::state::Mask {
+        crate::state::Mask {
+            name: "m".into(),
+            strokes,
+            adjust,
+        }
+    }
+
+    fn stroke(points: &[[f32; 2]], radius: f32, feather: f32, erase: bool) -> crate::state::Stroke {
+        crate::state::Stroke {
+            points: points.to_vec(),
+            radius,
+            feather,
+            erase,
+        }
+    }
+
+    #[test]
+    fn parity_masks() {
+        if !super::is_available() {
+            return;
+        }
+        let img = spot_test_image();
+        let mut state = EditState::default();
+        let mut warm = crate::state::MaskAdjust {
+            exposure: 0.6,
+            temperature: 0.4,
+            saturation: -0.3,
+            ..Default::default()
+        };
+        warm.selective_color[3].lightness = 0.2;
+        state.masks = vec![
+            mask(
+                vec![
+                    stroke(&[[0.2, 0.3], [0.6, 0.5], [0.7, 0.8]], 0.12, 0.6, false),
+                    stroke(&[[0.6, 0.5]], 0.08, 0.3, true),
+                ],
+                warm,
+            ),
+            mask(
+                vec![stroke(&[[0.5, 0.5]], 0.25, 1.0, false)],
+                crate::state::MaskAdjust {
+                    contrast: 0.4,
+                    shadows: 0.3,
+                    hue_shift: 20.0,
+                    ..Default::default()
+                },
+            ),
+        ];
+        let cpu = crate::processing::transform::apply(&img, &state).to_rgba8();
+        let gpu = try_apply(&img, &state)
+            .expect("gpu apply should succeed for masks")
+            .to_rgba8();
+        assert_ne!(cpu, img.to_rgba8(), "masks must change the image");
+        assert_rgba_close(&cpu, &gpu, 3);
+    }
+
+    #[test]
+    fn parity_masks_with_geometry_color_and_sharpness() {
+        if !super::is_available() {
+            return;
+        }
+        let img = spot_test_image();
+        let mut state = EditState::default();
+        state.rotate = 90;
+        state.flip_h = true;
+        state.crop = Some(Rect {
+            x: 0.1,
+            y: 0.1,
+            width: 0.8,
+            height: 0.8,
+        });
+        state.exposure = 0.2;
+        state.saturation = 0.1;
+        state.sharpness = 0.5;
+        state.masks = vec![mask(
+            vec![stroke(&[[0.3, 0.4], [0.6, 0.6]], 0.15, 0.5, false)],
+            crate::state::MaskAdjust {
+                exposure: -0.5,
+                ..Default::default()
+            },
+        )];
+        let cpu = crate::processing::transform::apply(&img, &state).to_rgba8();
+        let gpu = try_apply(&img, &state)
+            .expect("gpu apply should succeed for masks + geometry")
+            .to_rgba8();
+        assert_rgba_close_skip_fill(&cpu, &gpu, 16);
     }
 
     #[test]

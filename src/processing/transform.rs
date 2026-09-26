@@ -5,11 +5,11 @@ use imageproc::geometric_transformations::{
 
 use crate::state::{EditState, Keystone};
 
-use super::{color, exposure, filters, sharpness, spots};
+use super::{color, exposure, filters, masks, sharpness, spots};
 
 /// Apply all edits from `state` to `img`.
 /// Order: spots → straighten → keystone → orthogonal rotate → flip → crop →
-/// exposure → color → filters → sharpness.
+/// exposure → color → filters → masks → sharpness.
 pub fn apply(img: &DynamicImage, state: &EditState) -> DynamicImage {
     let mut out = img.clone();
 
@@ -17,6 +17,24 @@ pub fn apply(img: &DynamicImage, state: &EditState) -> DynamicImage {
     if !state.spots.is_empty() {
         out = spots::apply(&out, &state.spots);
     }
+
+    out = apply_geometry(out, state);
+
+    out = exposure::apply(out, state);
+    out = color::apply(out, state);
+    out = filters::apply(out, state);
+    // Painted masks — after global color, before sharpening (ADR-0019)
+    out = masks::apply(out, state, img.width(), img.height());
+    out = sharpness::apply(out, state);
+
+    out
+}
+
+/// Geometry only: straighten → keystone → orthogonal rotate → flip → crop.
+/// Also used to carry mask coverage into output space, so masks land exactly
+/// where the image does.
+pub fn apply_geometry(img: DynamicImage, state: &EditState) -> DynamicImage {
+    let mut out = img;
 
     // Straighten — arbitrary angle, bilinear interpolation
     if state.straighten.abs() > 0.01 {
@@ -63,11 +81,6 @@ pub fn apply(img: &DynamicImage, state: &EditState) -> DynamicImage {
             out = out.crop_imm(cx, cy, cw, ch);
         }
     }
-
-    out = exposure::apply(out, state);
-    out = color::apply(out, state);
-    out = filters::apply(out, state);
-    out = sharpness::apply(out, state);
 
     out
 }

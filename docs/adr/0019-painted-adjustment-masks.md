@@ -91,19 +91,26 @@ A mask's coverage at a point runs from 0 to 1.
    - Masks are soft, so this loses nothing visible.
    - The cost doesn't grow with the size of the export.
    - It's identical for previews and exports.
-2. **Following geometry.** The coverage bitmaps go through the same geometry pass as the image
-   (straighten, keystone, rotate, flip, crop), so they stay aligned with it. The bitmaps are
-   packed four masks per RGBA texture, and sampled bilinearly when scaled up to the output.
+2. **Following geometry.** The coverage is scaled to the source size and run through the same
+   geometry as the image (straighten, keystone, rotate, flip, crop), so it stays aligned with
+   it. This happens **on the CPU, in one shared helper** (`masks::output_coverage`, using
+   `transform::apply_geometry`). The GPU path uploads the result as one texture per mask.
+   - The first draft planned to warp coverage in the GPU geometry pass instead. Sharing the CPU
+     result means coverage is identical on both paths by construction, and only the colour
+     work needs parity tests.
 3. **Applying adjustments.** In the colour stage, after the global adjustments and the
    graduated filter and before sharpening, each mask in order does:
 
    `pixel = mix(pixel, adjust(pixel, mask.adjust), coverage)`
 
-   `adjust` is the same maths the global sliders use.
+   `adjust` is the same maths the global sliders use:
+   - **GPU:** the existing colour shader, run with the mask's settings, then a small blend pass.
+   - **CPU:** the existing exposure and colour functions.
+
+   No colour maths is duplicated.
 4. **GPU and CPU.** Both paths implement all of the above, with parity tests
    ([ADR-0005](0005-shared-preview-export-backend.md),
-   [ADR-0007](0007-guard-parity-tests.md)). The coverage maths lives in one shared function,
-   the same way spots share `SpotPx`.
+   [ADR-0007](0007-guard-parity-tests.md)).
 
 ### Editing
 
@@ -138,9 +145,13 @@ Costs:
 - **The largest pipeline change so far.** It adds a stroke-rasterizing pass, warps the masks
   through the geometry pass, and makes the colour pass loop over masks. Parity tests have to
   cover all three.
-- **Per-render cost:** every render redraws every stroke. Long painting sessions produce many
-  segments. Bounding-box culling on the CPU, and the capped resolution, keep this manageable.
-  If that isn't enough, masks may need caching separately from colour edits.
+- **Per-render CPU cost: watch this.** Every render with active masks recomputes each mask's
+  coverage on the CPU: rasterize, scale to the source, then warp.
+  - Measured at step 2: about **80ms per mask** for a 1920px preview, about 105ms with
+    straighten on, and correspondingly less for the smaller previews used during slider drags.
+  - Long painting sessions add segments, though bounding-box culling limits their cost.
+  - If this becomes noticeable, the mitigation is to cache each mask's coverage, keyed by its
+    strokes, the image size and the geometry. Colour-only edits, the common case, then reuse it.
 - **Edge precision:** at the 1024px cap, a hard-edged brush (feather 0) on a very large export
   gets a slightly soft edge. That's acceptable for adjustment masks.
 - **Two meanings for one panel.** The adjustments panel means "whole photo" or "selected mask"
