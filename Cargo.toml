@@ -4,6 +4,13 @@ version = "0.4.1"
 edition = "2024"
 default-run = "photograph"
 license = "GPL-2.0-only"
+description = "Native desktop photo browser and non-destructive editor for RAW images and color grading"
+repository = "https://github.com/divanvisagie/Photograph"
+homepage = "https://github.com/divanvisagie/Photograph"
+readme = "README.md"
+keywords = ["photo", "raw", "editor", "image", "photography"]
+categories = ["multimedia::images", "graphics"]
+exclude = ["docs/", "target/", "Makefile", ".claude/"]
 
 [features]
 default = []
