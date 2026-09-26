@@ -115,13 +115,16 @@ clean-deb: ## Remove built .deb artifacts
 # Releases are cut from a clean, pushed $(RELEASE_BRANCH): the tag is created
 # locally on HEAD and pushed before `gh release create --verify-tag`, so the
 # release always points at the exact commit the .deb was built from.
-release: release-check build-deb ## Tag HEAD, push it, publish the .deb as a GitHub release (NOTES=file.md for written notes)
+# The crates.io publish runs last: it can't be undone, and if it fails the
+# GitHub release is already out, so rerun just `cargo publish`.
+release: release-check build-deb ## Tag HEAD, push it, publish the .deb as a GitHub release and the crate to crates.io (NOTES=file.md for written notes)
 	@test -z "$$(git status --porcelain)" || { echo "the build modified tracked files (stale Cargo.lock?) — commit them and retry"; exit 1; }
 	cp "$(DEB_PATH)" "$(LATEST_DEB_PATH)"
 	git tag -a "$(TAG)" -m "$(TAG)"
 	git push origin "$(TAG)"
 	gh release create "$(TAG)" "$(DEB_PATH)" "$(LATEST_DEB_PATH)" --title "$(TAG)" $(NOTES_FLAG) --generate-notes --verify-tag
-	@echo "Released $(TAG) with $(DEB_PATH)"
+	cargo publish
+	@echo "Released $(TAG) with $(DEB_PATH) and published $(APP_NAME) $(VERSION) to crates.io"
 
 release-check: ## Verify a release can be cut (on master, clean, pushed, version not yet tagged)
 	@test -z "$(NOTES)" || test -f "$(NOTES)" || { echo "NOTES file not found: $(NOTES)"; exit 1; }

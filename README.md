@@ -1,6 +1,6 @@
 # Photograph
 
-[![Ubuntu](https://img.shields.io/badge/Ubuntu-E95420?style=for-the-badge&logo=ubuntu&logoColor=white)](#ubuntu-debian-dependencies)
+[![Ubuntu](https://img.shields.io/badge/Ubuntu-E95420?style=for-the-badge&logo=ubuntu&logoColor=white)](#ubuntudebian-dependencies)
 
 <img src="packaging/linux/photograph.svg" alt="Photograph logo" width="180" />
 
