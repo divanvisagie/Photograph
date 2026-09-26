@@ -926,26 +926,40 @@ impl Viewer {
 
         if let Some(crop) = visible_crop {
             let crop_screen = norm_to_screen(&crop, img_rect);
+            // Corner handles straddle the crop edge, so when the crop touches
+            // the image edge half of each handle lies outside the image. Give
+            // each corner its own interaction area so those halves still count
+            // as hovering this viewer.
+            let mut is_this_viewer = is_this_viewer;
+            for (i, r) in corner_rects(crop_screen).into_iter().enumerate() {
+                let resp = ui.interact(
+                    r,
+                    ui.id().with(("crop_corner", i)),
+                    egui::Sense::click_and_drag(),
+                );
+                is_this_viewer |= resp.hovered() || resp.dragged();
+            }
             // Always draw interactive overlay (handles + thirds) for visible crop
             draw_crop_overlay(ui, img_rect, crop_screen, true);
+
+            // Cursor feedback: the active drag's cursor, else whatever is hovered
+            if is_this_viewer {
+                let target = self.crop_drag.or_else(|| {
+                    pointer
+                        .hover_pos()
+                        .and_then(|pos| crop_hit_target(pos, crop_screen))
+                });
+                if let Some(t) = target {
+                    let dragging = self.crop_drag.is_some();
+                    ui.ctx().set_cursor_icon(crop_cursor(t, dragging));
+                }
+            }
 
             // Handle drag initiation — only for the interacted viewer
             if is_this_viewer {
                 if let Some(pos) = pointer.interact_pos() {
-                    if pointer.any_pressed() && self.crop_drag.is_none() && img_rect.contains(pos) {
-                        let corners = corner_rects(crop_screen);
-                        let mut target = None;
-                        for (i, cr) in corners.iter().enumerate() {
-                            if cr.contains(pos) {
-                                target = Some(DragTarget::Corner(i as u8));
-                                break;
-                            }
-                        }
-                        if target.is_none() && crop_screen.contains(pos) {
-                            target = Some(DragTarget::Interior);
-                        }
-
-                        if let Some(t) = target {
+                    if pointer.any_pressed() && self.crop_drag.is_none() {
+                        if let Some(t) = crop_hit_target(pos, crop_screen) {
                             // Auto-promote applied crop to pending on grab
                             if !has_pending {
                                 self.pending_crop = self.edit_state.crop.clone();
@@ -1293,6 +1307,28 @@ fn screen_to_norm_pos(pos: egui::Pos2, img_rect: egui::Rect) -> egui::Pos2 {
     )
 }
 
+/// Which part of the crop rect, if any, a drag starting at `pos` would grab.
+/// Corners win over the interior.
+fn crop_hit_target(pos: egui::Pos2, crop_screen: egui::Rect) -> Option<DragTarget> {
+    corner_rects(crop_screen)
+        .iter()
+        .position(|r| r.contains(pos))
+        .map(|i| DragTarget::Corner(i as u8))
+        .or_else(|| crop_screen.contains(pos).then_some(DragTarget::Interior))
+}
+
+fn crop_cursor(target: DragTarget, dragging: bool) -> egui::CursorIcon {
+    match target {
+        // TL/BR resize along one diagonal, TR/BL along the other
+        DragTarget::Corner(0 | 2) => egui::CursorIcon::ResizeNwSe,
+        DragTarget::Corner(_) => egui::CursorIcon::ResizeNeSw,
+        DragTarget::Interior if dragging => egui::CursorIcon::Grabbing,
+        DragTarget::Interior => egui::CursorIcon::Grab,
+    }
+}
+
+/// Hit areas for the four crop corners (TL, TR, BR, BL), centered on each
+/// corner — so they reach outside the image when the crop touches its edge.
 fn corner_rects(crop_screen: egui::Rect) -> [egui::Rect; 4] {
     let hs = HANDLE_SIZE;
     let corners = [
@@ -2149,11 +2185,34 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        INTERACTIVE_PREVIEW_MAX, PreviewBackend, bump_requested_generation_for_pending_changes,
+        DragTarget, HANDLE_SIZE, INTERACTIVE_PREVIEW_MAX, PreviewBackend,
+        bump_requested_generation_for_pending_changes, crop_hit_target,
         downscale_for_interactive, edit_state_signature, load_preview_stages_with_hooks,
         process_preview_with_backend_and_gpu_hook, source_signature,
     };
     use crate::state::EditState;
+
+    #[test]
+    fn full_image_crop_corners_are_grabbable_on_both_sides_of_the_edge() {
+        let img = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(400.0, 300.0));
+        let outside = img.left_top() - egui::vec2(HANDLE_SIZE, HANDLE_SIZE);
+        let inside = img.left_top() + egui::vec2(HANDLE_SIZE, HANDLE_SIZE);
+        for pos in [outside, inside] {
+            assert!(matches!(
+                crop_hit_target(pos, img),
+                Some(DragTarget::Corner(0))
+            ));
+        }
+        assert!(matches!(
+            crop_hit_target(img.right_bottom() + egui::vec2(4.0, 4.0), img),
+            Some(DragTarget::Corner(2))
+        ));
+        assert!(matches!(
+            crop_hit_target(img.center(), img),
+            Some(DragTarget::Interior)
+        ));
+        assert!(crop_hit_target(img.left_top() - egui::vec2(20.0, 20.0), img).is_none());
+    }
 
     #[test]
     fn bumps_generation_when_pending_changes_arrive_during_processing() {
