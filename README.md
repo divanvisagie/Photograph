@@ -48,6 +48,10 @@ sudo apt install ./photograph_amd64.deb
 
 Older versions and release notes are on [GitHub Releases](https://github.com/divanvisagie/Photograph/releases).
 
+**Upgrading:** the same two commands upgrade an existing install. Don't upgrade by opening the
+`.deb` in Ubuntu's App Center: when any version is already installed it shows a greyed-out
+"Installed" and won't upgrade ([app-center#2190](https://github.com/ubuntu/app-center/issues/2190)).
+
 Or build and install the `.deb` locally via the `Makefile` (see [Packaging](#packaging)):
 
 ```bash
