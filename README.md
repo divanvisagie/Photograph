@@ -1,6 +1,7 @@
 # Photograph
 
 [![Ubuntu](https://img.shields.io/badge/Ubuntu-E95420?style=for-the-badge&logo=ubuntu&logoColor=white)](#ubuntudebian-dependencies)
+[![crates.io](https://img.shields.io/crates/v/photograph?style=for-the-badge&logo=rust&logoColor=white)](https://crates.io/crates/photograph)
 
 <img src="packaging/linux/photograph.svg" alt="Photograph logo" width="180" />
 
