@@ -168,7 +168,8 @@ Releases are cut from `master` only. The tag and the `.deb` version both come fr
 2. On `master`, with the bump pushed:
 
    ```bash
-   make release
+   make release                      # GitHub's generated changelog link only
+   make release NOTES=notes.md       # your notes first, then the changelog link
    ```
 
 `make release` first runs `make release-check`. The check fails if you're not on `master`, if the

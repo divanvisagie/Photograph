@@ -30,6 +30,10 @@ ICON_TMP_DIR := target/icons
 RELEASE_BRANCH := master
 TAG := v$(VERSION)
 SITE_PAGE := docs/index.html
+# Optional release notes (Markdown): make release NOTES=path/to/notes.md.
+# Written notes come first; GitHub's generated changelog link follows.
+NOTES ?=
+NOTES_FLAG := $(if $(NOTES),--notes-file "$(NOTES)")
 
 .DEFAULT_GOAL := help
 
@@ -111,15 +115,16 @@ clean-deb: ## Remove built .deb artifacts
 # Releases are cut from a clean, pushed $(RELEASE_BRANCH): the tag is created
 # locally on HEAD and pushed before `gh release create --verify-tag`, so the
 # release always points at the exact commit the .deb was built from.
-release: release-check build-deb ## Tag HEAD as v<Cargo.toml version>, push it, and publish the .deb as a GitHub release
+release: release-check build-deb ## Tag HEAD, push it, publish the .deb as a GitHub release (NOTES=file.md for written notes)
 	@test -z "$$(git status --porcelain)" || { echo "the build modified tracked files (stale Cargo.lock?) — commit them and retry"; exit 1; }
 	cp "$(DEB_PATH)" "$(LATEST_DEB_PATH)"
 	git tag -a "$(TAG)" -m "$(TAG)"
 	git push origin "$(TAG)"
-	gh release create "$(TAG)" "$(DEB_PATH)" "$(LATEST_DEB_PATH)" --title "$(TAG)" --generate-notes --verify-tag
+	gh release create "$(TAG)" "$(DEB_PATH)" "$(LATEST_DEB_PATH)" --title "$(TAG)" $(NOTES_FLAG) --generate-notes --verify-tag
 	@echo "Released $(TAG) with $(DEB_PATH)"
 
 release-check: ## Verify a release can be cut (on master, clean, pushed, version not yet tagged)
+	@test -z "$(NOTES)" || test -f "$(NOTES)" || { echo "NOTES file not found: $(NOTES)"; exit 1; }
 	@command -v gh >/dev/null 2>&1 || { echo "gh CLI is required: https://cli.github.com"; exit 1; }
 	@branch="$$(git rev-parse --abbrev-ref HEAD)"; \
 		test "$$branch" = "$(RELEASE_BRANCH)" || { echo "releases are cut from $(RELEASE_BRANCH), but you are on $$branch"; exit 1; }
