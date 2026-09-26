@@ -54,6 +54,65 @@ pub fn open_image(path: &Path) -> anyhow::Result<DynamicImage> {
     develop_raw_with_recovery(&raw)
 }
 
+/// Steps shared by the full and preview develops: everything up to, but not
+/// including, sRGB gamma (applied after highlight recovery).
+fn develop_steps() -> RawDevelop {
+    RawDevelop {
+        steps: vec![
+            ProcessingStep::Rescale,
+            ProcessingStep::Demosaic,
+            ProcessingStep::CropActiveArea,
+            ProcessingStep::WhiteBalance,
+            ProcessingStep::Calibrate,
+            ProcessingStep::CropDefault,
+        ],
+    }
+}
+
+/// Highlight recovery over all pixels, in parallel chunks (it's per-pixel).
+fn recover_highlights(pixels: &mut [[f32; 3]]) {
+    use rayon::prelude::*;
+    pixels.par_chunks_mut(1 << 16).for_each(highlights::recover);
+}
+
+/// Develops a RAW for on-screen preview as RGBA8 fitting within `cap`.
+///
+/// Same develop and highlight recovery as the full-resolution path, but the
+/// image is shrunk to preview size while still linear, and only then gamma
+/// encoded and converted to 8-bit. The full path does those steps on every
+/// pixel of a 24 MP image single-threaded (~400ms) before the viewer throws
+/// ~90% of them away when scaling down; this does them on ~2.5 MP.
+pub fn open_raw_for_preview(path: &Path, cap: u32) -> anyhow::Result<DynamicImage> {
+    let raw = rawler::decode_file(path)?;
+    match develop_steps().develop_intermediate(&raw)? {
+        Intermediate::ThreeColor(mut pixels) => {
+            recover_highlights(pixels.pixels_mut());
+            let (small, w, h) = crate::processing::resize::downscale_linear_rgb(
+                &pixels.data,
+                pixels.width as u32,
+                pixels.height as u32,
+                cap,
+            );
+            let rgba: Vec<u8> = small
+                .iter()
+                .flat_map(|px| {
+                    let [r, g, b] = rawler::imgop::srgb::srgb_apply_gamma_n(*px);
+                    let to_u8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    [to_u8(r), to_u8(g), to_u8(b), 255]
+                })
+                .collect();
+            let img = image::RgbaImage::from_raw(w, h, rgba)
+                .ok_or_else(|| anyhow::anyhow!("raw preview produced invalid image"))?;
+            Ok(DynamicImage::ImageRgba8(img))
+        }
+        // Rare layouts: develop fully, then downscale.
+        _ => {
+            let full = develop_raw_with_recovery(&raw)?;
+            Ok(DynamicImage::ImageRgba8(crate::processing::resize::downscale_rgba8(&full, cap)))
+        }
+    }
+}
+
 /// Develop a RAW image with highlight recovery.
 ///
 /// Uses a custom pipeline that skips rawler's sRGB gamma step so we can
@@ -62,23 +121,11 @@ pub fn open_image(path: &Path) -> anyhow::Result<DynamicImage> {
 /// 2. Apply sRGB gamma.
 /// 3. Convert to a standard `DynamicImage`.
 fn develop_raw_with_recovery(raw: &rawler::RawImage) -> anyhow::Result<DynamicImage> {
-    let develop = RawDevelop {
-        steps: vec![
-            ProcessingStep::Rescale,
-            ProcessingStep::Demosaic,
-            ProcessingStep::CropActiveArea,
-            ProcessingStep::WhiteBalance,
-            ProcessingStep::Calibrate,
-            ProcessingStep::CropDefault,
-            // SRgb intentionally omitted — applied after highlight recovery.
-        ],
-    };
-
-    let intermediate = develop.develop_intermediate(raw)?;
+    let intermediate = develop_steps().develop_intermediate(raw)?;
 
     match intermediate {
         Intermediate::ThreeColor(mut pixels) => {
-            highlights::recover(pixels.pixels_mut());
+            recover_highlights(pixels.pixels_mut());
             pixels.for_each(rawler::imgop::srgb::srgb_apply_gamma_n);
             let w = pixels.width as u32;
             let h = pixels.height as u32;
@@ -172,7 +219,7 @@ fn open_embedded_raw_preview(path: &Path) -> anyhow::Result<Option<DynamicImage>
 /// Generate a thumbnail for `source` and write it to `dest`.
 pub fn generate(source: &Path, dest: &Path) -> anyhow::Result<()> {
     let img = open_image_for_preview(source)?;
-    let thumb = img.thumbnail(THUMB_SIZE, THUMB_SIZE);
+    let thumb = DynamicImage::ImageRgba8(crate::processing::resize::downscale_rgba8(&img, THUMB_SIZE));
     std::fs::create_dir_all(dest.parent().unwrap())?;
     thumb.save(dest)?;
     Ok(())

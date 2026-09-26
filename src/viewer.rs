@@ -76,7 +76,7 @@ fn color_image_from_rgba(rgba: RgbaImage) -> egui::ColorImage {
 
 fn scale_to_cap(img: DynamicImage, cap: u32) -> DynamicImage {
     if img.width() > cap || img.height() > cap {
-        img.thumbnail(cap, cap)
+        DynamicImage::ImageRgba8(crate::processing::resize::downscale_rgba8(&img, cap))
     } else {
         img
     }
@@ -111,7 +111,9 @@ fn load_preview_stages(path: &Path, cap: u32) -> anyhow::Result<Vec<DynamicImage
         path,
         cap,
         crate::thumbnail::open_image_for_preview_with_source,
-        crate::thumbnail::open_image,
+        // The RAW develop stage only needs preview size: develop straight to
+        // `cap` instead of full resolution.
+        |path| crate::thumbnail::open_raw_for_preview(path, cap),
     )
 }
 
@@ -443,7 +445,8 @@ impl Viewer {
         std::thread::spawn(move || {
             let size = crate::thumbnail::THUMB_SIZE;
             // Edits are resolution-independent, so render a small copy.
-            let small = DynamicImage::ImageRgba8(preview.thumbnail(size * 2, size * 2).into_rgba8());
+            let small =
+                DynamicImage::ImageRgba8(crate::processing::resize::downscale_rgba8(&preview, size * 2));
             let rendered = crate::processing::gpu_pipeline::try_apply(&small, &state).or_else(|| {
                 crate::processing::gpu_pipeline::allow_debug_cpu_fallback()
                     .then(|| crate::processing::transform::apply(&small, &state))
@@ -453,7 +456,7 @@ impl Viewer {
                 if let Some(dir) = thumb_path.parent() {
                     let _ = std::fs::create_dir_all(dir);
                 }
-                let _ = rendered.thumbnail(size, size).save(&thumb_path);
+                let _ = crate::processing::resize::downscale_rgba8(&rendered, size).save(&thumb_path);
             }
             let _ = tx.send(BgResult::ThumbnailSaved(path));
         });
@@ -2106,7 +2109,10 @@ where
 
 fn downscale_for_interactive(img: DynamicImage) -> DynamicImage {
     if img.width() > INTERACTIVE_PREVIEW_MAX || img.height() > INTERACTIVE_PREVIEW_MAX {
-        img.thumbnail(INTERACTIVE_PREVIEW_MAX, INTERACTIVE_PREVIEW_MAX)
+        DynamicImage::ImageRgba8(crate::processing::resize::downscale_rgba8(
+            &img,
+            INTERACTIVE_PREVIEW_MAX,
+        ))
     } else {
         img
     }

@@ -599,7 +599,10 @@ fn plain_thumb(path: &PathBuf, cache_dir: &PathBuf) -> Option<image::DynamicImag
         return image::open(&thumb_path).ok();
     }
     let full = crate::thumbnail::open_image_for_preview(path).ok()?;
-    let t = full.thumbnail(crate::thumbnail::THUMB_SIZE, crate::thumbnail::THUMB_SIZE);
+    let t = image::DynamicImage::ImageRgba8(crate::processing::resize::downscale_rgba8(
+        &full,
+        crate::thumbnail::THUMB_SIZE,
+    ));
     let _ = std::fs::create_dir_all(cache_dir);
     let _ = t.save(&thumb_path);
     Some(t)
