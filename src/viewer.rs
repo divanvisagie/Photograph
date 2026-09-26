@@ -304,6 +304,30 @@ impl Viewer {
             != serde_json::to_string(&EditState::default()).ok()
     }
 
+    /// The edit state the preview is rendered with. In crop mode the applied
+    /// crop is left out, so the full image is on screen and the crop overlay
+    /// (in full-image coordinates) lines up with it.
+    fn render_state(&self) -> EditState {
+        let mut state = self.edit_state.clone();
+        if self.crop_mode {
+            state.crop = None;
+        }
+        state
+    }
+
+    /// Enters or leaves crop mode, re-rendering the preview when that changes
+    /// whether the applied crop is shown (see `render_state`).
+    fn set_crop_mode(&mut self, on: bool) {
+        if self.crop_mode == on {
+            return;
+        }
+        self.crop_mode = on;
+        if self.edit_state.crop.is_some() {
+            self.needs_process = true;
+            self.last_slider_change = None;
+        }
+    }
+
     pub fn set_image(&mut self, path: PathBuf, ctx: &egui::Context) {
         if self.current_path.as_ref() == Some(&path) {
             return;
@@ -386,7 +410,7 @@ impl Viewer {
         }
 
         let img = preview;
-        let state = self.edit_state.clone();
+        let state = self.render_state();
         let preview_backend = self.preview_backend;
         let tx = self.tx.clone();
         let ctx2 = ctx.clone();
@@ -426,7 +450,7 @@ impl Viewer {
     ) -> PreviewCacheKey {
         PreviewCacheKey {
             source_signature: self.source_signature,
-            edit_signature: edit_state_signature(&self.edit_state),
+            edit_signature: edit_state_signature(&self.render_state()),
             input_width: preview.width(),
             input_height: preview.height(),
             quality,
@@ -555,6 +579,15 @@ impl Viewer {
     /// Renders the image viewport. When `editable` is false (fullscreen preview
     /// mode), the split-view/crop/save toolbar and crop interaction are hidden.
     pub fn show_image(&mut self, ui: &mut egui::Ui, editable: bool) {
+        // Leaving the editor (e.g. to fullscreen) abandons an in-progress crop,
+        // like toggling Crop off, so the view goes back to the applied crop.
+        if !editable && self.crop_mode {
+            self.set_crop_mode(false);
+            self.pending_crop = None;
+            self.crop_drag = None;
+            self.crop_create_origin = None;
+        }
+
         // If edits arrive while processing is active, bump the requested generation
         // so the in-flight result is ignored on arrival.
         self.mark_inflight_stale_if_needed();
@@ -639,7 +672,7 @@ impl Viewer {
                     self.split_view = !self.split_view;
                 }
                 if ui.selectable_label(self.crop_mode, "Crop").clicked() {
-                    self.crop_mode = !self.crop_mode;
+                    self.set_crop_mode(!self.crop_mode);
                     if self.crop_mode {
                         // Enter crop mode: start with full image or existing applied crop
                         self.pending_crop = Some(self.edit_state.crop.clone().unwrap_or(Rect {
@@ -697,7 +730,7 @@ impl Viewer {
                     .clicked()
                 {
                     self.edit_state.crop = self.pending_crop.take();
-                    self.crop_mode = false;
+                    self.set_crop_mode(false);
                     self.crop_drag = None;
                     self.needs_process = true;
                     self.last_slider_change = None;
@@ -1175,14 +1208,14 @@ impl Viewer {
             ui.horizontal(|ui| {
                 if ui.button("Apply").clicked() {
                     self.edit_state.crop = self.pending_crop.take();
-                    self.crop_mode = false;
+                    self.set_crop_mode(false);
                     self.crop_drag = None;
                     self.needs_process = true;
                     self.last_slider_change = None;
                 }
                 if ui.button("Cancel").clicked() {
                     self.pending_crop = None;
-                    self.crop_mode = false;
+                    self.set_crop_mode(false);
                     self.crop_drag = None;
                     self.crop_create_origin = None;
                 }
@@ -1201,7 +1234,7 @@ impl Viewer {
             ui.horizontal(|ui| {
                 if ui.button("Edit").clicked() {
                     self.pending_crop = self.edit_state.crop.clone();
-                    self.crop_mode = true;
+                    self.set_crop_mode(true);
                 }
                 if ui.button("Reset").clicked() {
                     self.edit_state.crop = None;
@@ -2514,6 +2547,30 @@ mod tests {
         // Ratio 2: dragging the bottom edge down would need width > 1.
         resize_from_edge(&mut c, 2, 0.5, 0.9, Some(2.0));
         assert_crop(&c, 0.0, 0.0, 1.0, 0.5);
+    }
+
+    #[test]
+    fn crop_mode_renders_without_applied_crop() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.edit_state.crop = Some(crop(0.5, 0.0, 0.5, 1.0));
+        assert!(v.render_state().crop.is_some());
+
+        v.set_crop_mode(true);
+        assert!(v.render_state().crop.is_none(), "crop mode must show the full image");
+        assert!(v.needs_process, "entering crop mode must re-render");
+        assert!(v.edit_state.crop.is_some(), "applied crop itself is kept");
+
+        v.needs_process = false;
+        v.set_crop_mode(false);
+        assert!(v.render_state().crop.is_some());
+        assert!(v.needs_process, "leaving crop mode must re-render");
+    }
+
+    #[test]
+    fn toggling_crop_mode_without_applied_crop_skips_rerender() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.set_crop_mode(true);
+        assert!(!v.needs_process);
     }
 
     #[test]
