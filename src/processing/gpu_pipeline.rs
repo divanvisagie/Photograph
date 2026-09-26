@@ -2163,6 +2163,7 @@ mod tests {
     fn mask(strokes: Vec<crate::state::Stroke>, adjust: crate::state::MaskAdjust) -> crate::state::Mask {
         crate::state::Mask {
             name: "m".into(),
+            enabled: true,
             strokes,
             adjust,
         }

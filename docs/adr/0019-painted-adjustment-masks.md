@@ -59,6 +59,8 @@ We will add painted adjustment masks.
 
 - **`Mask`** has:
   - `name`;
+  - `enabled`: a visibility flag, true by default and left out of the sidecar while true. A
+    hidden mask keeps its paint and settings but changes nothing, in previews or exports;
   - `strokes: Vec<Stroke>`;
   - `adjust`: its own `exposure`, `contrast`, `highlights`, `shadows`, `temperature`,
     `saturation`, `hue_shift` and `selective_color` (8 bands, like the global setting), all
@@ -119,8 +121,9 @@ A mask's coverage at a point runs from 0 to 1.
   This is the spot tool's view, and it reuses its screen-to-source mapping, generalized as
   `SourceProjection`.
 - **Masks window,** shown while the tool is active:
-  - a list of masks with a **+** button: click a name to select it, rename it in place, or
-    delete it;
+  - a list of masks with a **+** button. Each row has the name on the left (click the row to
+    select it) and a visibility checkbox on the right, checked by default. The selected mask can
+    be renamed or deleted;
   - the brush: size, feather, a Paint/Erase toggle, and whether to show the overlay.
 - **Adjustments panel.** While the tool is active, the normal panel shows "Editing mask:
   <name>" and edits that mask. It shows the sliders a mask carries: the basic colour sliders and

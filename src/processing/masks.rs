@@ -136,9 +136,10 @@ fn apply_stroke(
     }
 }
 
-/// Whether `mask` changes anything: it has paint and a non-neutral adjustment.
+/// Whether `mask` changes anything: it's visible, has paint, and has a
+/// non-neutral adjustment.
 pub fn is_active(mask: &Mask) -> bool {
-    mask.strokes.iter().any(|s| !s.erase) && mask.adjust != Default::default()
+    mask.enabled && mask.strokes.iter().any(|s| !s.erase) && mask.adjust != Default::default()
 }
 
 pub fn any_active(state: &EditState) -> bool {
@@ -242,6 +243,7 @@ mod tests {
     fn mask(strokes: Vec<Stroke>) -> Mask {
         Mask {
             name: "m".into(),
+            enabled: true,
             strokes,
             adjust: MaskAdjust::default(),
         }
@@ -258,6 +260,7 @@ mod tests {
     fn brightening_mask(strokes: Vec<Stroke>) -> Mask {
         Mask {
             name: "m".into(),
+            enabled: true,
             strokes,
             adjust: MaskAdjust {
                 exposure: 1.0,
@@ -291,12 +294,16 @@ mod tests {
     fn neutral_or_empty_masks_are_inactive() {
         let neutral = Mask {
             name: "m".into(),
+            enabled: true,
             strokes: vec![stroke(&[[0.5, 0.5]], 0.1, 0.5, false)],
             adjust: MaskAdjust::default(),
         };
         assert!(!is_active(&neutral));
         assert!(!is_active(&brightening_mask(vec![])));
-        assert!(is_active(&brightening_mask(vec![stroke(&[[0.5, 0.5]], 0.1, 0.5, false)])));
+        let mut visible = brightening_mask(vec![stroke(&[[0.5, 0.5]], 0.1, 0.5, false)]);
+        assert!(is_active(&visible));
+        visible.enabled = false;
+        assert!(!is_active(&visible), "hidden masks change nothing");
     }
 
     #[test]

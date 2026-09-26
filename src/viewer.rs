@@ -448,6 +448,7 @@ impl Viewer {
             .unwrap_or(1);
         self.edit_state.masks.push(Mask {
             name: format!("Mask {n}"),
+            enabled: true,
             strokes: Vec::new(),
             adjust: Default::default(),
         });
@@ -1595,8 +1596,12 @@ impl Viewer {
                 }
                 for i in 0..self.edit_state.masks.len() {
                     let selected = self.selected_mask == Some(i);
-                    if ui.selectable_label(selected, &self.edit_state.masks[i].name).clicked() {
+                    let row = mask_list_row(ui, &mut self.edit_state.masks[i], selected);
+                    if row.selected {
                         self.selected_mask = Some(i);
+                    }
+                    if row.visibility_changed {
+                        self.edits_changed(false);
                     }
                 }
                 if let Some(i) = self.selected_mask.filter(|&i| i < self.edit_state.masks.len()) {
@@ -2154,6 +2159,56 @@ impl SourceProjection {
         let crop_w = self.crop.as_ref().map_or(1.0, |c| c.width);
         let px_per_unit = self.img_rect.width() / (crop_w * rotated_w);
         radius * rotated_w.min(1.0) * px_per_unit
+    }
+}
+
+struct MaskRowResponse {
+    selected: bool,
+    visibility_changed: bool,
+}
+
+/// One row of the Masks list: the name on the left (click the row to select
+/// it) and a visibility checkbox on the right.
+fn mask_list_row(ui: &mut egui::Ui, mask: &mut Mask, selected: bool) -> MaskRowResponse {
+    let height = ui.spacing().interact_size.y;
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::click());
+    let visuals = ui.visuals();
+    let (fill, text_color) = if selected {
+        (visuals.selection.bg_fill, visuals.selection.stroke.color)
+    } else if resp.hovered() {
+        (visuals.widgets.hovered.weak_bg_fill, visuals.text_color())
+    } else {
+        (egui::Color32::TRANSPARENT, visuals.text_color())
+    };
+    let text_color = if mask.enabled { text_color } else { text_color.gamma_multiply(0.5) };
+    ui.painter().rect_filled(rect, 3.0, fill);
+    let text_rect = egui::Rect::from_min_max(
+        rect.min + egui::vec2(6.0, 0.0),
+        egui::pos2(rect.right() - height - 4.0, rect.bottom()),
+    );
+    ui.painter().with_clip_rect(text_rect).text(
+        text_rect.left_center(),
+        egui::Align2::LEFT_CENTER,
+        &mask.name,
+        egui::TextStyle::Body.resolve(ui.style()),
+        text_color,
+    );
+
+    // The checkbox is added after the row, so it takes clicks over it.
+    let checkbox_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.right() - height, rect.top()),
+        egui::vec2(height, height),
+    );
+    let mut checkbox_ui = ui.new_child(egui::UiBuilder::new().max_rect(checkbox_rect));
+    let visibility_changed = checkbox_ui
+        .checkbox(&mut mask.enabled, "")
+        .on_hover_text(if mask.enabled { "Hide this mask's changes" } else { "Show this mask's changes" })
+        .changed();
+
+    MaskRowResponse {
+        selected: resp.clicked(),
+        visibility_changed,
     }
 }
 

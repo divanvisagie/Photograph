@@ -167,10 +167,22 @@ pub struct Stroke {
 /// A named painted mask and the adjustments applied through it.
 pub struct Mask {
     pub name: String,
+    /// Whether the mask's adjustments are applied. Hidden masks keep their
+    /// paint and settings but change nothing, in previews or exports.
+    #[serde(default = "enabled_default", skip_serializing_if = "is_true")]
+    pub enabled: bool,
     #[serde(default)]
     pub strokes: Vec<Stroke>,
     #[serde(default)]
     pub adjust: MaskAdjust,
+}
+
+fn enabled_default() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,6 +294,7 @@ mod tests {
         assert!(!serde_json::to_string(&state).unwrap().contains("masks"));
         state.masks.push(Mask {
             name: "Face".into(),
+            enabled: true,
             strokes: vec![Stroke {
                 points: vec![[0.1, 0.2], [0.3, 0.4]],
                 radius: 0.05,
@@ -295,6 +308,10 @@ mod tests {
         });
         let json = serde_json::to_string(&state).unwrap();
         assert!(!json.contains("erase"), "paint strokes omit the erase flag");
+        assert!(!json.contains("enabled"), "visible masks omit the flag");
+        let old: EditState =
+            serde_json::from_str(r#"{"masks":[{"name":"Old","strokes":[]}]}"#).unwrap();
+        assert!(old.masks[0].enabled, "masks saved before the flag load as visible");
         let adjust_json = serde_json::to_string(&state.masks[0].adjust).unwrap();
         assert!(!adjust_json.contains("selective_color"), "untouched bands are omitted");
         state.masks[0].adjust.selective_color[3].saturation = -0.5;
