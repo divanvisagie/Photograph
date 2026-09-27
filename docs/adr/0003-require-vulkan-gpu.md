@@ -4,7 +4,7 @@ Date: 2026-02-28
 
 ## Status
 
-Accepted
+Superseded by [ADR-0020](0020-portable-gpu-backend-selection.md)
 
 ## Context
 

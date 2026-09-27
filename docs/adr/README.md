@@ -40,7 +40,7 @@ mechanics of adding one.
 |---|-------|--------|
 | [0001](0001-platform-packaging-linux-and-macos.md) | Support Linux and macOS via platform-specific packaging | Superseded by [ADR-0008](0008-drop-macos-packaging.md) |
 | [0002](0002-edit-state-sidecar-persistence.md) | Persist edit state via per-image JSON sidecar files | Accepted |
-| [0003](0003-require-vulkan-gpu.md) | Require Vulkan GPU (prefer discrete, allow integrated) for normal runtime | Accepted |
+| [0003](0003-require-vulkan-gpu.md) | Require Vulkan GPU (prefer discrete, allow integrated) for normal runtime | Superseded by [ADR-0020](0020-portable-gpu-backend-selection.md) |
 | [0004](0004-cpu-fallback-debug-only.md) | Allow CPU fallback only with explicit debug env flag | Accepted |
 | [0005](0005-shared-preview-export-backend.md) | Use one GPU pipeline for both preview and export | Accepted |
 | [0006](0006-preview-cancellation.md) | Keep async preview generation/cancellation semantics | Accepted |
@@ -57,6 +57,7 @@ mechanics of adding one.
 | [0017](0017-discover-mounts-for-sidebar.md) | Discover storage and network mounts for the sidebar | Accepted |
 | [0018](0018-spot-removal-in-source-coordinates.md) | Spot removal (clone and heal) as the first pipeline stage, in source-image coordinates | Accepted |
 | [0019](0019-painted-adjustment-masks.md) | Painted adjustment masks stored as brush strokes | Accepted |
+| [0020](0020-portable-gpu-backend-selection.md) | Select each platform's primary GPU backend instead of Vulkan only | Accepted |
 
 ## Decision Relationship
 

@@ -4,7 +4,8 @@ Date: 2026-08-01
 
 ## Status
 
-Accepted
+Accepted. The Vulkan-only backend part is superseded by
+[ADR-0020](0020-portable-gpu-backend-selection.md); Linux remains the only supported platform.
 
 ## Context
 

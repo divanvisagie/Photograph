@@ -1157,18 +1157,15 @@ fn adapter_type_priority(device_type: wgpu::DeviceType) -> Option<u8> {
     }
 }
 
-/// The native GPU backend (see docs/adr/0012-drop-macos-support-linux-only.md).
-const NATIVE_BACKEND: wgpu::Backends = wgpu::Backends::VULKAN;
-const NATIVE_BACKEND_FILTER: wgpu::Backend = wgpu::Backend::Vulkan;
+/// Each platform's primary native backend: Vulkan on Linux, Metal on macOS, DX12
+/// or Vulkan on Windows (see docs/adr/0020-portable-gpu-backend-selection.md).
+const NATIVE_BACKENDS: wgpu::Backends = wgpu::Backends::PRIMARY;
 
 fn select_adapter_index(infos: &[wgpu::AdapterInfo]) -> Option<usize> {
     infos
         .iter()
         .enumerate()
         .filter_map(|(index, info)| {
-            if info.backend != NATIVE_BACKEND_FILTER {
-                return None;
-            }
             adapter_type_priority(info.device_type).map(|priority| (priority, index))
         })
         .min()
@@ -1177,10 +1174,10 @@ fn select_adapter_index(infos: &[wgpu::AdapterInfo]) -> Option<usize> {
 
 fn init_gpu_context() -> Option<GpuContext> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: NATIVE_BACKEND,
+        backends: NATIVE_BACKENDS,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
-    let adapters: Vec<_> = pollster::block_on(instance.enumerate_adapters(NATIVE_BACKEND));
+    let adapters: Vec<_> = pollster::block_on(instance.enumerate_adapters(NATIVE_BACKENDS));
     let adapter_infos: Vec<_> = adapters.iter().map(|adapter| adapter.get_info()).collect();
     let adapter_index = select_adapter_index(&adapter_infos)?;
     let adapter = adapters.into_iter().nth(adapter_index)?;
@@ -1841,7 +1838,7 @@ mod tests {
     use crate::state::{EditState, GradFilter, Rect};
 
     use super::{
-        NATIVE_BACKEND_FILTER, debug_fallback_truthy, has_gpu_adjustments,
+        debug_fallback_truthy, has_gpu_adjustments,
         is_gpu_state_supported, select_adapter_index, try_apply,
     };
 
@@ -1880,8 +1877,8 @@ mod tests {
     #[test]
     fn adapter_selection_prefers_discrete_then_integrated() {
         let infos = vec![
-            adapter_info(wgpu::DeviceType::IntegratedGpu, NATIVE_BACKEND_FILTER),
-            adapter_info(wgpu::DeviceType::DiscreteGpu, NATIVE_BACKEND_FILTER),
+            adapter_info(wgpu::DeviceType::IntegratedGpu, wgpu::Backend::Vulkan),
+            adapter_info(wgpu::DeviceType::DiscreteGpu, wgpu::Backend::Vulkan),
         ];
         assert_eq!(select_adapter_index(&infos), Some(1));
     }
@@ -1889,15 +1886,15 @@ mod tests {
     #[test]
     fn adapter_selection_accepts_integrated_when_no_discrete() {
         let infos = vec![
-            adapter_info(wgpu::DeviceType::Cpu, NATIVE_BACKEND_FILTER),
-            adapter_info(wgpu::DeviceType::IntegratedGpu, NATIVE_BACKEND_FILTER),
+            adapter_info(wgpu::DeviceType::Cpu, wgpu::Backend::Vulkan),
+            adapter_info(wgpu::DeviceType::IntegratedGpu, wgpu::Backend::Vulkan),
         ];
         assert_eq!(select_adapter_index(&infos), Some(1));
     }
 
     #[test]
     fn adapter_selection_rejects_cpu_only() {
-        let infos = vec![adapter_info(wgpu::DeviceType::Cpu, NATIVE_BACKEND_FILTER)];
+        let infos = vec![adapter_info(wgpu::DeviceType::Cpu, wgpu::Backend::Vulkan)];
         assert_eq!(select_adapter_index(&infos), None);
     }
 
