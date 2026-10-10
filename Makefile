@@ -37,7 +37,7 @@ NOTES_FLAG := $(if $(NOTES),--notes-file "$(NOTES)")
 
 .DEFAULT_GOAL := help
 
-.PHONY: help dev build build-linux build-deb build-unsupported install install-linux install-unsupported clean-deb clean-icons icons icon-runtime release release-check bump docs
+.PHONY: help dev build build-linux build-deb build-unsupported install install-linux install-unsupported clean clean-deb clean-icons icons icon-runtime release release-check bump docs
 
 help: ## Show this help
 	@echo "Usage: make <target>"
@@ -108,6 +108,9 @@ build-deb: ## Build the .deb into target/deb/
 
 install-linux: build-deb
 	sudo apt install --reinstall -y "./$(DEB_PATH)"
+
+clean: ## Remove all build output (fixes cargo run running a stale build)
+	cargo clean
 
 clean-deb: ## Remove built .deb artifacts
 	rm -rf "$(DEB_DIR)"
