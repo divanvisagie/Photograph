@@ -3,23 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Photograph - Native Desktop Photo Editor</title>
+  <title>Photograph</title>
+  <meta name="description" content="Native Desktop Photo Editor">
   <link rel="stylesheet" href="https://divanv.com/css/styles.css">
   <link rel="stylesheet" href="https://divanv.com/css/main.css">
 </head>
 <body>
-  <nav>
-    <div>
-      <h1>
-        <a href="https://divanv.com">Divan <span class="full">Visagie</span></a>
-        <span style="color: var(--accent-color); margin: 0 8px;">/</span>
-        <span>Photograph</span>
-      </h1>
-    </div>
-  </nav>
-
+  <!--
+    photograph.divanv.com doesn't serve this file as-is: Caddy renders it into
+    divanv.com's page shell (nav, footer, stylesheets), taking only what sits
+    between the content markers below plus the <title> and description above.
+    See the blog repo's build_project_shell and mimisbrunnr/heimdallr/caddy.
+    Keep both markers; `make bump` still edits the download links in here.
+  -->
   <div class="content">
     <div class="post-content">
+<!-- content -->
+      <h1 class="title">Photograph</h1>
       <h2 class="subtitle">Native Desktop Photo Editor</h2>
 
       <p>
@@ -46,18 +46,7 @@
 
       <p>Available as a <code>.deb</code> for Ubuntu and Debian-based distributions (x86-64).</p>
       <p>
-        <a href="https://github.com/divanvisagie/Photograph/releases/download/v0.4.4/photograph_0.4.4-1_amd64.deb" style="
-          display: inline-block;
-          font-weight: bold;
-          letter-spacing: 0.06em;
-          text-transform: uppercase;
-          border: 1px solid;
-          padding: 0.5rem 1.1rem;
-          text-decoration: none;
-          background: var(--accent-color, #e05a00);
-          border-color: var(--accent-color, #e05a00);
-          color: #ffffff;
-        ">Download .deb (v0.4.4)</a>
+        <a class="button" href="https://github.com/divanvisagie/Photograph/releases/download/v0.4.4/photograph_0.4.4-1_amd64.deb">Download .deb (v0.4.4)</a>
       </p>
 <p>Or from a terminal:</p>
 <pre><code>wget https://github.com/divanvisagie/Photograph/releases/download/v0.4.4/photograph_0.4.4-1_amd64.deb
@@ -73,7 +62,7 @@ sudo apt install ./photograph_0.4.4-1_amd64.deb</code></pre>
         Older versions and release notes are on the
         <a href="https://github.com/divanvisagie/Photograph/releases">releases page</a>.
       </p>
-      <p style="font-size: 13px; color: var(--muted-color, #2f2925);">
+      <p class="note">
         Requires a Vulkan-capable GPU. Run <code>vulkaninfo --summary</code> to verify.
       </p>
 
@@ -89,7 +78,7 @@ photograph</code></pre>
       <h2>Screenshot</h2>
 
       <p>
-        <img src="photograph-ui.png" alt="Photograph screenshot" style="max-width: 100%; border: 1px solid var(--border-color, #d0ccc8);">
+        <img src="photograph-ui.png" alt="Photograph screenshot" class="framed">
       </p>
 
       <h2>What It Does</h2>
@@ -151,14 +140,8 @@ make install        # build and install the .deb</code></pre>
       <h2>License</h2>
 
       <p>GPL-2.0-only. See <a href="https://github.com/divanvisagie/Photograph/blob/master/LICENSE">LICENSE</a>.</p>
+<!-- /content -->
     </div>
   </div>
-
-  <footer>
-    Divan Visagie &bull; Copyright 2019-26 &bull;
-    <a href="mailto:me@divanv.com">me@divanv.com</a> &bull;
-    <span><a href="https://divanv.com/cv">CV</a></span> &bull;
-    <span><a href="https://github.com/divanvisagie">GitHub</a></span> &bull;
-  </footer>
 </body>
 </html>
