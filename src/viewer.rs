@@ -505,6 +505,17 @@ impl Viewer {
         self.split_view = false;
     }
 
+    /// Turns split view on or off. Split view only compares, so turning it on
+    /// leaves the crop, spot and mask tools, which can't work in it.
+    fn set_split_view(&mut self, on: bool) {
+        if on {
+            self.exit_crop_mode();
+            self.set_spot_mode(false);
+            self.set_mask_mode(false);
+        }
+        self.split_view = on;
+    }
+
     /// Enters or leaves the spot tool. Entering leaves crop mode; either way
     /// the preview re-renders, since spot mode drops geometry (`render_state`).
     fn set_spot_mode(&mut self, on: bool) {
@@ -514,6 +525,7 @@ impl Viewer {
         if on {
             self.exit_crop_mode();
             self.set_mask_mode(false);
+            self.split_view = false;
         }
         self.spot_mode = on;
         self.selected_spot = None;
@@ -531,6 +543,7 @@ impl Viewer {
         if on {
             self.exit_crop_mode();
             self.set_spot_mode(false);
+            self.split_view = false;
             if self.selected_mask.is_none() && !self.edit_state.masks.is_empty() {
                 self.selected_mask = Some(0);
             }
@@ -616,6 +629,7 @@ impl Viewer {
         if on {
             self.set_spot_mode(false);
             self.set_mask_mode(false);
+            self.split_view = false;
         }
         self.crop_mode = on;
         if self.edit_state.crop.is_some() {
@@ -1035,7 +1049,7 @@ impl Viewer {
         if editable {
             ui.horizontal(|ui| {
                 if ui.selectable_label(self.split_view, "Split view").clicked() {
-                    self.split_view = !self.split_view;
+                    self.set_split_view(!self.split_view);
                 }
                 if self.split_view {
                     ui.checkbox(&mut self.split_original_crop, "Show original crop")
@@ -3639,7 +3653,7 @@ mod tests {
     #[test]
     fn leaving_the_editor_leaves_split_view_and_tools() {
         let mut v = super::Viewer::new(0, PreviewBackend::Auto);
-        v.split_view = true;
+        v.set_split_view(true);
         v.leave_tools();
         assert!(!v.split_view);
         v.set_crop_mode(true);
@@ -3660,6 +3674,18 @@ mod tests {
         v.set_mask_mode(true);
         v.set_crop_mode(true);
         assert!(v.crop_mode && !v.mask_mode);
+    }
+
+    #[test]
+    fn split_view_and_tools_are_exclusive() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.set_split_view(true);
+        v.set_mask_mode(true);
+        assert!(v.mask_mode && !v.split_view);
+        v.set_split_view(true);
+        assert!(v.split_view && !v.mask_mode);
+        v.set_crop_mode(true);
+        assert!(v.crop_mode && !v.split_view);
     }
 
     #[test]
