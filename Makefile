@@ -149,9 +149,9 @@ release: ## Bump, tag and push a release, publish the crate; CI builds the .deb/
 	git push --quiet origin "$(RELEASE_BRANCH)" "$(TAG)"
 	gh release create "$(TAG)" --draft --title "$(TAG)" $(NOTES_FLAG) --generate-notes --verify-tag
 	cargo publish
-	# publish's verify build shares target/debug and leaves the dev build's
-	# fingerprint pointing at target/package's sources, so `cargo run` stops
-	# seeing edits to src/ until this crate's build is cleaned.
+	@# publish's verify build shares target/debug and leaves the dev build's
+	@# fingerprint pointing at target/package's sources, so `cargo run` stops
+	@# seeing edits to src/ until this crate's build is cleaned.
 	cargo clean -p $(APP_NAME)
 	@echo "Released $(APP_NAME) $(NEXT_VERSION) to crates.io and pushed $(TAG)."
 	@echo "GitHub is building the .deb and .dmg; the release goes public, and the site's"
