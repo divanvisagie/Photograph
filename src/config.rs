@@ -9,6 +9,10 @@ pub struct AppConfig {
     pub window_height: Option<f32>,
     pub browse_path: Option<PathBuf>,
     pub preview_backend: Option<String>,
+    /// Let the desktop draw the window frame instead of Photograph's own
+    /// header bar (see ADR-0022).
+    #[serde(default)]
+    pub system_title_bar: bool,
 }
 
 impl AppConfig {

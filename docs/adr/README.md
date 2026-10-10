@@ -58,6 +58,8 @@ mechanics of adding one.
 | [0018](0018-spot-removal-in-source-coordinates.md) | Spot removal (clone and heal) as the first pipeline stage, in source-image coordinates | Accepted |
 | [0019](0019-painted-adjustment-masks.md) | Painted adjustment masks stored as brush strokes | Accepted |
 | [0020](0020-portable-gpu-backend-selection.md) | Select each platform's primary GPU backend instead of Vulkan only | Accepted |
+| [0021](0021-follow-desktop-color-scheme.md) | Follow the desktop's light/dark setting through the XDG portal | Accepted |
+| [0022](0022-draw-own-window-frame.md) | Draw Photograph's own window frame | Accepted |
 
 ## Decision Relationship
 
@@ -73,10 +75,13 @@ flowchart TD
     D[0006: Generation cancellation] --> C
     D --> E
     F[0009: RAW highlight recovery] --> C
+    T[0021: Follow desktop light/dark] --> W[0022: Own window frame]
 ```
 
 ## Revisit Triggers
 
+- The window frame needs fixing in both Photograph and UnAmp often enough to justify a shared crate,
+  or it misbehaves on a desktop — see [ADR-0022](0022-draw-own-window-frame.md).
 - GPU texture-size limits materially impact export workflows.
 - Future `wgpu`/driver changes require backend policy adjustments.
 - Renewed macOS demand that native alternatives (Photos, third-party RAW editors) don't cover —

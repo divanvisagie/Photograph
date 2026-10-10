@@ -1,7 +1,9 @@
 mod app;
+mod appearance;
 mod browser;
 mod config;
 mod editor;
+mod frame;
 mod locations;
 mod metadata;
 mod processing;
@@ -137,7 +139,11 @@ fn main() -> eframe::Result {
             .with_title("Photograph")
             .with_app_id("photograph")
             .with_icon(build_window_icon())
-            .with_inner_size([width, height]),
+            .with_inner_size([width, height])
+            // Photograph draws its own frame unless asked not to (see
+            // ADR-0022); transparency lets that frame have rounded corners.
+            .with_decorations(config.system_title_bar)
+            .with_transparent(true),
         ..Default::default()
     };
 

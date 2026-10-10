@@ -3333,6 +3333,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wgpu 30.0.0",
+ "zbus",
 ]
 
 [[package]]

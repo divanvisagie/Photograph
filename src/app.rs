@@ -149,6 +149,9 @@ pub struct PhotographApp {
     render_current: String,
     render_rx: Option<mpsc::Receiver<RenderEvent>>,
     config: AppConfig,
+    /// The theme the window frame was last told about; `None` until the
+    /// first frame.
+    frame_theme: Option<egui::Theme>,
 }
 
 /// Ubuntu/Yaru-flavoured surface colors, distinct per theme; the accent and
@@ -266,7 +269,8 @@ fn photograph_visuals(theme: egui::Theme) -> egui::Visuals {
 }
 
 /// Wires up dark and light `Visuals`, GTK-style spacing, and a theme
-/// preference that follows the OS light/dark setting (egui's default).
+/// preference that follows the OS light/dark setting (egui's default; on
+/// Linux the setting comes from `appearance`, see ADR-0021).
 fn configure_visuals(ctx: &egui::Context) {
     ctx.set_visuals_of(egui::Theme::Dark, photograph_visuals(egui::Theme::Dark));
     ctx.set_visuals_of(egui::Theme::Light, photograph_visuals(egui::Theme::Light));
@@ -321,6 +325,7 @@ impl PhotographApp {
     ) -> Self {
         configure_fonts(&cc.egui_ctx);
         configure_visuals(&cc.egui_ctx);
+        crate::appearance::watch(&cc.egui_ctx);
         let browser = Browser::new(config.browse_path.clone());
         let output_dir = default_render_dir();
         let (preview_status_label, preview_status_details, preview_status_vendor) =
@@ -349,6 +354,7 @@ impl PhotographApp {
             render_current: String::new(),
             render_rx: None,
             config,
+            frame_theme: None,
         }
     }
 
@@ -840,6 +846,23 @@ mod tests {
     }
 }
 
+impl PhotographApp {
+    /// Keeps the desktop-drawn frame in step with the theme when the system
+    /// title bar is on: winit's Wayland frame only reads the desktop's
+    /// light/dark setting when the window opens (see ADR-0021).
+    fn follow_theme(&mut self, ctx: &egui::Context) {
+        let theme = ctx.theme();
+        if self.frame_theme == Some(theme) {
+            return;
+        }
+        self.frame_theme = Some(theme);
+        ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(match theme {
+            egui::Theme::Dark => egui::SystemTheme::Dark,
+            egui::Theme::Light => egui::SystemTheme::Light,
+        }));
+    }
+}
+
 impl eframe::App for PhotographApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -875,25 +898,40 @@ impl eframe::App for PhotographApp {
             }
         }
 
-        // Top menu bar
+        self.follow_theme(ctx);
+        let custom_frame = !self.config.system_title_bar;
+        let radius = if custom_frame { crate::frame::corner_radius(ctx, WINDOW_RADIUS) } else { 0 };
+        let tools_shown = self.view_mode == ViewMode::Edit;
+        let filmstrip_shown =
+            self.view_mode != ViewMode::Library && self.browser.selection.len() > 1;
+        // Which panel holds the window's bottom-right corner.
+        let (tools_se, filmstrip_se, central_se) = match (tools_shown, filmstrip_shown) {
+            (true, _) => (radius, 0, 0),
+            (false, true) => (0, radius, 0),
+            (false, false) => (0, 0, radius),
+        };
+
+        // Header bar: toolbar, title and window buttons
         egui::Panel::top("main_menu")
             .frame(
                 egui::Frame::side_top_panel(ui.style())
-                    .inner_margin(egui::Margin::symmetric(12, 8)),
+                    .inner_margin(egui::Margin::symmetric(12, 8))
+                    .corner_radius(egui::CornerRadius { nw: radius, ne: radius, sw: 0, se: 0 }),
             )
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("Render").clicked() {
-                        self.show_render_window = true;
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let mut edit_clicked = false;
+                crate::frame::title_bar(
+                    ui,
+                    "Photograph",
+                    custom_frame,
+                    |ui| {
+                        if ui.button("Render").clicked() {
+                            self.show_render_window = true;
+                        }
+                    },
+                    |ui| {
                         if self.browser.selected.is_some() && self.view_mode != ViewMode::Edit {
-                            if ui.button("Edit").clicked() {
-                                if let Some(path) = self.browser.selected.clone() {
-                                    self.viewer.set_image(path, ctx);
-                                }
-                                self.view_mode = ViewMode::Edit;
-                            }
+                            edit_clicked = ui.button("Edit").clicked();
                         }
                         if let Some(vendor) = self.preview_status_vendor {
                             let (rect, response) = ui
@@ -910,8 +948,14 @@ impl eframe::App for PhotographApp {
                         if let Some(details) = &self.preview_status_details {
                             response.on_hover_text(details);
                         }
-                    });
-                });
+                    },
+                );
+                if edit_clicked {
+                    if let Some(path) = self.browser.selected.clone() {
+                        self.viewer.set_image(path, ctx);
+                    }
+                    self.view_mode = ViewMode::Edit;
+                }
             });
         // Left sidebar — locations + current folder's subfolders
         egui::Panel::left("sidebar")
@@ -920,7 +964,8 @@ impl eframe::App for PhotographApp {
             .min_size(160.0)
             .frame(
                 egui::Frame::side_top_panel(ui.style())
-                    .inner_margin(egui::Margin::symmetric(10, 10)),
+                    .inner_margin(egui::Margin::symmetric(10, 10))
+                    .corner_radius(egui::CornerRadius { sw: radius, ..Default::default() }),
             )
             .show(ui, |ui| {
                 // Version pinned to the bottom; the folder list fills and
@@ -939,13 +984,14 @@ impl eframe::App for PhotographApp {
             });
 
         // Tools panel only applies while actively editing a photo
-        if self.view_mode == ViewMode::Edit {
+        if tools_shown {
             egui::Panel::right("tools")
                 .resizable(false)
                 .exact_size(TOOLS_WIDTH)
                 .frame(
                     egui::Frame::side_top_panel(ui.style())
-                        .inner_margin(egui::Margin::symmetric(10, 10)),
+                        .inner_margin(egui::Margin::symmetric(10, 10))
+                        .corner_radius(egui::CornerRadius { se: tools_se, ..Default::default() }),
                 )
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
@@ -958,13 +1004,14 @@ impl eframe::App for PhotographApp {
 
         // Filmstrip shows the working selection, when there is more than one
         // photo in it, while previewing or editing a photo.
-        if self.view_mode != ViewMode::Library && self.browser.selection.len() > 1 {
+        if filmstrip_shown {
             egui::Panel::bottom("filmstrip")
                 .resizable(false)
                 .exact_size(FILMSTRIP_HEIGHT)
                 .frame(
                     egui::Frame::side_top_panel(ui.style())
-                        .inner_margin(egui::Margin::symmetric(10, 8)),
+                        .inner_margin(egui::Margin::symmetric(10, 8))
+                        .corner_radius(egui::CornerRadius { se: filmstrip_se, ..Default::default() }),
                 )
                 .show(ui, |ui| {
                     let active_path = self.viewer.path().map(|p| p.as_path());
@@ -977,7 +1024,11 @@ impl eframe::App for PhotographApp {
 
         // Central panel — Library grid, fullscreen preview, or Edit view
         egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(ui.style()).inner_margin(egui::Margin::same(12)))
+            .frame(
+                egui::Frame::central_panel(ui.style())
+                    .inner_margin(egui::Margin::same(12))
+                    .corner_radius(egui::CornerRadius { se: central_se, ..Default::default() }),
+            )
             .show(ui, |ui| match self.view_mode {
                 ViewMode::Library => {
                     if let Some(open_path) = self.browser.show_contents(ui, ctx) {
@@ -1183,6 +1234,20 @@ impl eframe::App for PhotographApp {
                     ui.label(format!("Selected: {}", self.browser.selection_count()));
                 });
         }
+
+        if custom_frame {
+            crate::frame::edges(ctx, radius);
+        }
+    }
+
+    /// Transparent behind Photograph's own frame, so its rounded corners
+    /// show the desktop; the panels paint everything else.
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        if self.config.system_title_bar {
+            visuals.panel_fill.to_normalized_gamma_f32()
+        } else {
+            [0.0; 4]
+        }
     }
 
     fn on_exit(&mut self) {
@@ -1191,6 +1256,10 @@ impl eframe::App for PhotographApp {
         self.config.save();
     }
 }
+
+/// Corner rounding of the window's own frame: libadwaita's
+/// `--window-radius`, as shipped in Ubuntu's Yaru styles.
+const WINDOW_RADIUS: u8 = 15;
 
 /// "Photograph v0.4.1", from Cargo.toml at build time; debug builds say so.
 fn version_label() -> String {
