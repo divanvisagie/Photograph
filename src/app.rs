@@ -558,7 +558,8 @@ impl PhotographApp {
     }
 
     /// Renders the shared header row (back button, filename, mark toggle)
-    /// used by both the fullscreen preview and edit views.
+    /// used by both the fullscreen preview and edit views; the preview also
+    /// gets an Edit button, next to the photo rather than up in the title bar.
     fn show_photo_header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui.button("\u{2039} Back to Library").clicked() {
@@ -567,6 +568,9 @@ impl PhotographApp {
             ui.separator();
             ui.label(self.viewer.filename());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if self.view_mode == ViewMode::Fullscreen && ui.button("Edit").clicked() {
+                    self.view_mode = ViewMode::Edit;
+                }
                 if let Some(path) = self.viewer.path().cloned() {
                     let checked = self.browser.is_selected(&path);
                     let star = if checked {
@@ -937,7 +941,8 @@ impl eframe::App for PhotographApp {
                         }
                     },
                     |ui| {
-                        if self.browser.selected.is_some() && self.view_mode != ViewMode::Edit {
+                        // The photo views have their own Edit button (`show_photo_header`).
+                        if self.browser.selected.is_some() && self.view_mode == ViewMode::Library {
                             edit_clicked = ui.button("Edit").clicked();
                         }
                         if let Some(vendor) = self.preview_status_vendor {
