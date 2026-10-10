@@ -1237,107 +1237,81 @@ impl Viewer {
                 ui.weak("Loading...");
             });
         } else if let Some(ref tex) = texture {
+            let zoom_before = self.zoom;
             if split {
-                let half_w = (avail_w - ui.spacing().item_spacing.x) / 2.0;
-                ui.horizontal(|ui| {
-                    if let Some(ref orig) = original_texture {
-                        draw_fitted_image(ui, orig, half_w, img_max_h, 1.0, egui::Vec2::ZERO);
-                    } else {
-                        ui.allocate_ui(egui::vec2(half_w, img_max_h), |ui| {
-                            ui.centered_and_justified(|ui| {
-                                ui.label("No original");
-                            });
-                        });
+                // Before on the left, after on the right, each in its own
+                // half; zoom and pan apply to both, so they show the same spot.
+                let half = egui::vec2((avail_w - ui.spacing().item_spacing.x) / 2.0, img_max_h);
+                let (area, _) =
+                    ui.allocate_exact_size(egui::vec2(avail_w, img_max_h), egui::Sense::hover());
+                let left = egui::Rect::from_min_size(area.min, half);
+                let right = egui::Rect::from_min_size(egui::pos2(area.max.x - half.x, area.min.y), half);
+                match original_texture {
+                    Some(ref orig) => {
+                        draw_pane_image(ui, orig, left, self.zoom, self.pan_offset);
                     }
-                    draw_fitted_image(ui, tex, half_w, img_max_h, 1.0, egui::Vec2::ZERO);
-                });
-            } else {
-                if editable && self.crop_mode {
-                    // Disable zoom/pan while cropping
-                    let img_rect =
-                        draw_fitted_image(ui, tex, avail_w, img_max_h, 1.0, egui::Vec2::ZERO);
-                    self.handle_crop_interaction(ui, img_rect);
-                } else {
-                    let zoom_before = self.zoom;
-                    let img_rect =
-                        draw_fitted_image(ui, tex, avail_w, img_max_h, self.zoom, self.pan_offset);
-
-                    // Compute fit_size for clamping
-                    let tex_size = tex.size_vec2();
-                    let fit_scale = (avail_w / tex_size.x).min(img_max_h / tex_size.y);
-                    let fit_size = tex_size * fit_scale;
-                    let viewport_rect =
-                        egui::Rect::from_center_size(img_rect.center() - self.pan_offset, fit_size);
-
-                    // Single interaction widget for zoom/pan — only the hovered
-                    // viewer responds to scroll, so stacked windows don't conflict.
-                    // The spot and mask tools supply their own, and pan themselves.
-                    let source_tool = editable && (self.spot_mode || self.mask_mode);
-                    let resp = if editable && self.spot_mode {
-                        self.handle_spot_interaction(ui, img_rect, viewport_rect)
-                    } else if editable && self.mask_mode {
-                        self.handle_mask_interaction(ui, img_rect, viewport_rect)
-                    } else {
-                        let sense = if self.zoom > 1.0 {
-                            egui::Sense::click_and_drag()
-                        } else {
-                            egui::Sense::click()
-                        };
-                        ui.interact(viewport_rect, ui.id().with("zoom_pan"), sense)
-                    };
-
-                    // Scroll-to-zoom and pinch-to-zoom (only when hovered)
-                    if resp.hovered() {
-                        // Mouse wheel zoom
-                        let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
-                        // Trackpad pinch zoom (egui reports as a multiplier, e.g. 1.02)
-                        let pinch_delta = ui.input(|i| i.zoom_delta());
-
-                        let old_zoom = self.zoom;
-                        let new_zoom = if scroll_delta != 0.0 {
-                            (self.zoom * (1.1_f32).powf(scroll_delta / 50.0)).clamp(1.0, 10.0)
-                        } else if (pinch_delta - 1.0).abs() > 0.001 {
-                            (self.zoom * pinch_delta).clamp(1.0, 10.0)
-                        } else {
-                            old_zoom
-                        };
-
-                        if new_zoom != old_zoom {
-                            // Zoom toward cursor
-                            if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                                let img_center = viewport_rect.center();
-                                let rel =
-                                    cursor_pos.to_vec2() - img_center.to_vec2() - self.pan_offset;
-                                self.pan_offset += rel * (1.0 - new_zoom / old_zoom);
-                            }
-                            self.zoom = new_zoom;
-                        }
-                    }
-
-                    // Drag-to-pan when zoomed in
-                    if self.zoom > 1.0 && !source_tool {
-                        if resp.dragged() {
-                            self.pan_offset += resp.drag_delta();
-                        }
-                        // Double-click to reset zoom
-                        if resp.double_clicked() {
-                            self.zoom = 1.0;
-                            self.pan_offset = egui::Vec2::ZERO;
-                        }
-                    }
-
-                    // Clamp pan so image doesn't leave viewport excessively
-                    let zoomed_size = fit_size * self.zoom;
-                    let max_pan_x = ((zoomed_size.x - fit_size.x) / 2.0).max(0.0);
-                    let max_pan_y = ((zoomed_size.y - fit_size.y) / 2.0).max(0.0);
-                    self.pan_offset.x = self.pan_offset.x.clamp(-max_pan_x, max_pan_x);
-                    self.pan_offset.y = self.pan_offset.y.clamp(-max_pan_y, max_pan_y);
-
-                    // Track zoom changes for adaptive preview reload
-                    if (self.zoom - zoom_before).abs() > 0.001 {
-                        self.last_zoom_change = Some(Instant::now());
+                    None => {
+                        ui.painter().text(
+                            left.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "No original",
+                            egui::TextStyle::Body.resolve(ui.style()),
+                            ui.visuals().weak_text_color(),
+                        );
                     }
                 }
+                let fit_size = draw_pane_image(ui, tex, right, self.zoom, self.pan_offset).size() / self.zoom;
+
+                let sense = if self.zoom > 1.0 {
+                    egui::Sense::click_and_drag()
+                } else {
+                    egui::Sense::click()
+                };
+                let resp = ui.interact(area, ui.id().with("zoom_pan"), sense);
+                let pane = match resp.hover_pos() {
+                    Some(pos) if pos.x < area.center().x => left,
+                    _ => right,
+                };
+                self.zoom_pan_input(ui, &resp, pane.center(), true);
+                self.clamp_pan(fit_size * self.zoom - half);
+            } else if editable && self.crop_mode {
+                // Disable zoom/pan while cropping
+                let img_rect = draw_fitted_image(ui, tex, avail_w, img_max_h, 1.0, egui::Vec2::ZERO);
+                self.handle_crop_interaction(ui, img_rect);
+            } else {
+                let img_rect =
+                    draw_fitted_image(ui, tex, avail_w, img_max_h, self.zoom, self.pan_offset);
+
+                // Compute fit_size for clamping
+                let tex_size = tex.size_vec2();
+                let fit_scale = (avail_w / tex_size.x).min(img_max_h / tex_size.y);
+                let fit_size = tex_size * fit_scale;
+                let viewport_rect =
+                    egui::Rect::from_center_size(img_rect.center() - self.pan_offset, fit_size);
+
+                // Single interaction widget for zoom/pan — only the hovered
+                // viewer responds to scroll, so stacked windows don't conflict.
+                // The spot and mask tools supply their own, and pan themselves.
+                let source_tool = editable && (self.spot_mode || self.mask_mode);
+                let resp = if editable && self.spot_mode {
+                    self.handle_spot_interaction(ui, img_rect, viewport_rect)
+                } else if editable && self.mask_mode {
+                    self.handle_mask_interaction(ui, img_rect, viewport_rect)
+                } else {
+                    let sense = if self.zoom > 1.0 {
+                        egui::Sense::click_and_drag()
+                    } else {
+                        egui::Sense::click()
+                    };
+                    ui.interact(viewport_rect, ui.id().with("zoom_pan"), sense)
+                };
+                self.zoom_pan_input(ui, &resp, viewport_rect.center(), !source_tool);
+                self.clamp_pan(fit_size * self.zoom - fit_size);
+            }
+
+            // Track zoom changes for adaptive preview reload
+            if (self.zoom - zoom_before).abs() > 0.001 {
+                self.last_zoom_change = Some(Instant::now());
             }
         } else {
             ui.allocate_ui(egui::vec2(avail_w, 40.0), |ui| {
@@ -1367,8 +1341,7 @@ impl Viewer {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Crop and split view always show the whole image.
-                if !self.crop_mode && !self.split_view {
+                if !self.crop_mode {
                     // Zoom presets menu
                     let zoom_label = if (self.zoom - 1.0).abs() < 0.01 {
                         "Fit".to_string()
@@ -1419,6 +1392,60 @@ impl Viewer {
         if (self.zoom - zoom_before_bar).abs() > 0.001 {
             self.last_zoom_change = Some(Instant::now());
         }
+    }
+
+    /// Scroll/pinch zoom toward the cursor while `resp` is hovered, `center`
+    /// being the unpanned centre of the viewport under it; with `drag_pans`,
+    /// drag pans when zoomed in and double-click goes back to fit.
+    fn zoom_pan_input(
+        &mut self,
+        ui: &egui::Ui,
+        resp: &egui::Response,
+        center: egui::Pos2,
+        drag_pans: bool,
+    ) {
+        if resp.hovered() {
+            // Mouse wheel zoom
+            let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
+            // Trackpad pinch zoom (egui reports as a multiplier, e.g. 1.02)
+            let pinch_delta = ui.input(|i| i.zoom_delta());
+
+            let old_zoom = self.zoom;
+            let new_zoom = if scroll_delta != 0.0 {
+                (self.zoom * (1.1_f32).powf(scroll_delta / 50.0)).clamp(1.0, 10.0)
+            } else if (pinch_delta - 1.0).abs() > 0.001 {
+                (self.zoom * pinch_delta).clamp(1.0, 10.0)
+            } else {
+                old_zoom
+            };
+
+            if new_zoom != old_zoom {
+                // Zoom toward cursor
+                if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                    let rel = cursor_pos - center - self.pan_offset;
+                    self.pan_offset += rel * (1.0 - new_zoom / old_zoom);
+                }
+                self.zoom = new_zoom;
+            }
+        }
+
+        if self.zoom > 1.0 && drag_pans {
+            if resp.dragged() {
+                self.pan_offset += resp.drag_delta();
+            }
+            // Double-click to reset zoom
+            if resp.double_clicked() {
+                self.zoom = 1.0;
+                self.pan_offset = egui::Vec2::ZERO;
+            }
+        }
+    }
+
+    /// Clamps the pan so the zoomed image, overflowing its viewport by
+    /// `overflow`, can't be dragged past its edges.
+    fn clamp_pan(&mut self, overflow: egui::Vec2) {
+        let max_pan = (overflow / 2.0).max(egui::Vec2::ZERO);
+        self.pan_offset = self.pan_offset.clamp(-max_pan, max_pan);
     }
 
     /// Where spots appear on screen for the current preview (`img_rect` is the
@@ -2595,6 +2622,23 @@ fn constrain_aspect(crop: &mut Rect, ratio: Option<f32>) {
 // Drawing helpers
 // ---------------------------------------------------------------------------
 
+/// Draws `tex` fitted to `pane` then zoomed and panned, clipped to the pane,
+/// and returns the zoomed image rect.
+fn draw_pane_image(
+    ui: &egui::Ui,
+    tex: &egui::TextureHandle,
+    pane: egui::Rect,
+    zoom: f32,
+    pan_offset: egui::Vec2,
+) -> egui::Rect {
+    let tex_size = tex.size_vec2();
+    let fit_scale = (pane.width() / tex_size.x).min(pane.height() / tex_size.y);
+    let img_rect = egui::Rect::from_center_size(pane.center() + pan_offset, tex_size * fit_scale * zoom);
+    let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    ui.painter().with_clip_rect(pane).image(tex.id(), img_rect, uv, egui::Color32::WHITE);
+    img_rect
+}
+
 fn draw_fitted_image(
     ui: &mut egui::Ui,
     tex: &egui::TextureHandle,
@@ -3725,6 +3769,59 @@ mod tests {
         v.apply_pending_crop();
         assert!(!v.crop_mode && v.pending_crop.is_none());
         assert_crop(v.edit_state.crop.as_ref().unwrap(), 0.1, 0.1, 0.5, 0.5);
+    }
+
+    #[test]
+    fn pan_stays_within_the_zoomed_overflow() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.pan_offset = egui::vec2(500.0, -500.0);
+        v.clamp_pan(egui::vec2(200.0, 100.0));
+        assert_eq!(v.pan_offset, egui::vec2(100.0, -50.0));
+        // An image smaller than its viewport stays centred.
+        v.clamp_pan(egui::vec2(-40.0, -10.0));
+        assert_eq!(v.pan_offset, egui::Vec2::ZERO);
+    }
+
+    /// Scrolls the mouse wheel over `at` in an 800x600 editor showing a
+    /// solid 300x200 texture, returning the zoom afterwards.
+    fn zoom_after_scrolling(split: bool, at: egui::Pos2) -> f32 {
+        let ctx = egui::Context::default();
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.texture = Some(ctx.load_texture(
+            "t",
+            egui::ColorImage::filled([300, 200], egui::Color32::GRAY),
+            egui::TextureOptions::LINEAR,
+        ));
+        if split {
+            v.set_split_view(true);
+        }
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        for frame in 0..30 {
+            let mut events = vec![egui::Event::PointerMoved(at)];
+            if frame == 2 {
+                events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, 100.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: Default::default(),
+                });
+            }
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                time: Some(frame as f64 / 60.0),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| v.show_image(ui, true));
+        }
+        v.zoom
+    }
+
+    #[test]
+    fn scrolling_zooms_both_split_view_sides() {
+        assert!(zoom_after_scrolling(false, egui::pos2(400.0, 300.0)) > 1.0);
+        assert!(zoom_after_scrolling(true, egui::pos2(600.0, 300.0)) > 1.0);
+        assert!(zoom_after_scrolling(true, egui::pos2(200.0, 300.0)) > 1.0);
     }
 
     #[test]
