@@ -496,6 +496,15 @@ impl Viewer {
         self.crop_create_origin = None;
     }
 
+    /// Leaves every editing mode — crop (discarding an unapplied selection),
+    /// spot, mask and split view — for when the editor is left.
+    pub fn leave_tools(&mut self) {
+        self.exit_crop_mode();
+        self.set_spot_mode(false);
+        self.set_mask_mode(false);
+        self.split_view = false;
+    }
+
     /// Enters or leaves the spot tool. Entering leaves crop mode; either way
     /// the preview re-renders, since spot mode drops geometry (`render_state`).
     fn set_spot_mode(&mut self, on: bool) {
@@ -938,9 +947,7 @@ impl Viewer {
         // Leaving the editor (e.g. to fullscreen) abandons an in-progress crop,
         // like toggling Crop off, so the view goes back to the applied crop.
         if !editable {
-            self.exit_crop_mode();
-            self.set_spot_mode(false);
-            self.set_mask_mode(false);
+            self.leave_tools();
         }
 
         // If edits arrive while processing is active, bump the requested generation
@@ -3626,6 +3633,21 @@ mod tests {
         v.set_mask_mode(true);
         assert!(!v.crop_mode && v.pending_crop.is_none());
         v.set_spot_mode(true);
+        assert!(!v.mask_mode);
+    }
+
+    #[test]
+    fn leaving_the_editor_leaves_split_view_and_tools() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.split_view = true;
+        v.leave_tools();
+        assert!(!v.split_view);
+        v.set_crop_mode(true);
+        v.pending_crop = Some(crop(0.0, 0.0, 0.5, 0.5));
+        v.leave_tools();
+        assert!(!v.crop_mode && v.pending_crop.is_none());
+        v.set_mask_mode(true);
+        v.leave_tools();
         assert!(!v.mask_mode);
     }
 

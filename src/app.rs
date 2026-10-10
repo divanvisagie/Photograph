@@ -562,8 +562,7 @@ impl PhotographApp {
     fn show_photo_header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui.button("\u{2039} Back to Library").clicked() {
-                self.viewer.save_edits();
-                self.view_mode = ViewMode::Library;
+                self.back_to_library();
             }
             ui.separator();
             ui.label(self.viewer.filename());
@@ -581,6 +580,14 @@ impl PhotographApp {
                 }
             });
         });
+    }
+
+    /// Saves the photo's edits and returns to the library, leaving any
+    /// active tool so the editor opens plainly next time.
+    fn back_to_library(&mut self) {
+        self.viewer.save_edits();
+        self.viewer.leave_tools();
+        self.view_mode = ViewMode::Library;
     }
 
     /// Steps the active photo to the previous/next image (by `delta`) in the
@@ -887,8 +894,7 @@ impl eframe::App for PhotographApp {
         // like the sidebar path bar has focus).
         if self.view_mode != ViewMode::Library && ctx.memory(|m| m.focused().is_none()) {
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                self.viewer.save_edits();
-                self.view_mode = ViewMode::Library;
+                self.back_to_library();
             }
             if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
                 self.step_active_photo(1, ctx);
