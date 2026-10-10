@@ -1367,7 +1367,8 @@ impl Viewer {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !self.crop_mode {
+                // Crop and split view always show the whole image.
+                if !self.crop_mode && !self.split_view {
                     // Zoom presets menu
                     let zoom_label = if (self.zoom - 1.0).abs() < 0.01 {
                         "Fit".to_string()
