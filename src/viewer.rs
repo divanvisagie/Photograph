@@ -532,6 +532,14 @@ impl Viewer {
         false
     }
 
+    /// Applies the pending crop selection and leaves crop mode.
+    fn apply_pending_crop(&mut self) {
+        self.edit_state.crop = self.pending_crop.take();
+        self.exit_crop_mode();
+        self.needs_process = true;
+        self.last_slider_change = None;
+    }
+
     /// Enters or leaves the spot tool. Entering leaves crop mode; either way
     /// the preview re-renders, since spot mode drops geometry (`render_state`).
     fn set_spot_mode(&mut self, on: bool) {
@@ -1188,19 +1196,10 @@ impl Viewer {
                     .add_enabled(has_pending, egui::Button::new("Apply"))
                     .clicked()
                 {
-                    self.edit_state.crop = self.pending_crop.take();
-                    self.set_crop_mode(false);
-                    self.crop_drag = None;
-                    self.needs_process = true;
-                    self.last_slider_change = None;
+                    self.apply_pending_crop();
                 }
-                if ui
-                    .add_enabled(has_pending, egui::Button::new("Cancel"))
-                    .clicked()
-                {
-                    self.pending_crop = None;
-                    self.crop_drag = None;
-                    self.crop_create_origin = None;
+                if ui.button("Cancel").clicked() {
+                    self.exit_crop_mode();
                 }
                 if ui
                     .add_enabled(has_applied, egui::Button::new("Reset"))
@@ -2005,6 +2004,7 @@ impl Viewer {
         });
 
         // Show sliders for the pending crop if it exists
+        let (mut apply, mut cancel) = (false, false);
         if let Some(ref mut crop) = self.pending_crop {
             ui.horizontal(|ui| {
                 ui.label("X");
@@ -2045,17 +2045,10 @@ impl Viewer {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 if ui.button("Apply").clicked() {
-                    self.edit_state.crop = self.pending_crop.take();
-                    self.set_crop_mode(false);
-                    self.crop_drag = None;
-                    self.needs_process = true;
-                    self.last_slider_change = None;
+                    apply = true;
                 }
                 if ui.button("Cancel").clicked() {
-                    self.pending_crop = None;
-                    self.set_crop_mode(false);
-                    self.crop_drag = None;
-                    self.crop_create_origin = None;
+                    cancel = true;
                 }
             });
         } else if self.edit_state.crop.is_some() {
@@ -2080,6 +2073,11 @@ impl Viewer {
                     self.last_slider_change = None;
                 }
             });
+        }
+        if apply {
+            self.apply_pending_crop();
+        } else if cancel {
+            self.exit_crop_mode();
         }
     }
 }
@@ -3716,6 +3714,16 @@ mod tests {
         v.set_split_view(true);
         assert!(v.back_out() && !v.split_view);
         assert!(!v.back_out());
+    }
+
+    #[test]
+    fn applying_a_crop_leaves_crop_mode() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.set_crop_mode(true);
+        v.pending_crop = Some(crop(0.1, 0.1, 0.5, 0.5));
+        v.apply_pending_crop();
+        assert!(!v.crop_mode && v.pending_crop.is_none());
+        assert_crop(v.edit_state.crop.as_ref().unwrap(), 0.1, 0.1, 0.5, 0.5);
     }
 
     #[test]
