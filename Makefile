@@ -124,6 +124,10 @@ release: release-check build-deb ## Tag HEAD, push it, publish the .deb as a Git
 	git push origin "$(TAG)"
 	gh release create "$(TAG)" "$(DEB_PATH)" "$(LATEST_DEB_PATH)" --title "$(TAG)" $(NOTES_FLAG) --generate-notes --verify-tag
 	cargo publish
+	# publish's verify build shares target/debug and leaves the dev build's
+	# fingerprint pointing at target/package's sources, so `cargo run` stops
+	# seeing edits to src/ until this crate's build is cleaned.
+	cargo clean -p $(APP_NAME)
 	@echo "Released $(TAG) with $(DEB_PATH) and published $(APP_NAME) $(VERSION) to crates.io"
 
 release-check: ## Verify a release can be cut (on master, clean, pushed, version not yet tagged)
