@@ -4,7 +4,8 @@ Date: 2026-09-26
 
 ## Status
 
-Accepted
+Accepted. Its editing view, which dropped straighten and keystone while the tool was
+active, is superseded by [ADR-0023](0023-tools-show-all-geometry.md).
 
 ## Context
 

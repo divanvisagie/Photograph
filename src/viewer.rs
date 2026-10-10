@@ -472,18 +472,14 @@ impl Viewer {
 
     /// The edit state the preview is rendered with. In crop mode the applied
     /// crop is left out, so the full image is on screen and the crop overlay
-    /// (in full-image coordinates) lines up with it. In spot and mask mode
-    /// straighten and keystone are left out: what remains (rotate, flip,
-    /// crop) maps exactly back to source-image coordinates, where spots and
-    /// strokes live (ADR-0018, ADR-0019; see `SourceProjection`).
+    /// (in full-image coordinates) lines up with it. The spot and mask tools
+    /// show all of the geometry, mapping the screen back to the
+    /// source-image coordinates spots and strokes live in through
+    /// `SourceProjection` (ADR-0023).
     fn render_state(&self) -> EditState {
         let mut state = self.edit_state.clone();
         if self.crop_mode {
             state.crop = None;
-        }
-        if self.spot_mode || self.mask_mode {
-            state.straighten = 0.0;
-            state.keystone = Default::default();
         }
         state
     }
@@ -540,8 +536,8 @@ impl Viewer {
         self.last_slider_change = None;
     }
 
-    /// Enters or leaves the spot tool. Entering leaves crop mode; either way
-    /// the preview re-renders, since spot mode drops geometry (`render_state`).
+    /// Enters or leaves the spot tool. Entering leaves crop mode and the other
+    /// tools.
     fn set_spot_mode(&mut self, on: bool) {
         if self.spot_mode == on {
             return;
@@ -554,12 +550,10 @@ impl Viewer {
         self.spot_mode = on;
         self.selected_spot = None;
         self.spot_drag = None;
-        self.needs_process = true;
-        self.last_slider_change = None;
     }
 
     /// Enters or leaves the mask tool; like the spot tool it's exclusive with
-    /// the other tools and re-renders without straighten and keystone.
+    /// the other tools.
     fn set_mask_mode(&mut self, on: bool) {
         if self.mask_mode == on {
             return;
@@ -574,8 +568,6 @@ impl Viewer {
         }
         self.mask_mode = on;
         self.painting = false;
-        self.needs_process = true;
-        self.last_slider_change = None;
     }
 
     /// Adds a new, empty mask named "Mask N" and selects it.
@@ -1451,14 +1443,7 @@ impl Viewer {
     /// Where spots appear on screen for the current preview (`img_rect` is the
     /// full, possibly zoomed image rect).
     fn source_projection(&self, img_rect: egui::Rect) -> SourceProjection {
-        SourceProjection {
-            img_rect,
-            source_aspect: self.spot_image_aspect(),
-            rotate: self.edit_state.rotate,
-            flip_h: self.edit_state.flip_h,
-            flip_v: self.edit_state.flip_v,
-            crop: self.edit_state.crop.clone(),
-        }
+        SourceProjection::new(img_rect, self.spot_image_aspect(), &self.edit_state)
     }
 
     /// Spot tool interaction: click empty image to add a spot, click a circle
@@ -2228,25 +2213,88 @@ fn screen_to_norm_pos(pos: egui::Pos2, img_rect: egui::Rect) -> egui::Pos2 {
     )
 }
 
-/// Maps between source-image coordinates (where spots live) and the screen,
-/// for a preview rendered with rotate, flip and crop but no straighten or
-/// keystone (see `Viewer::render_state` in spot mode). The pipeline applies
-/// rotate (clockwise), then flips, then crop; `to_screen` follows that order
-/// and `to_source` inverts it exactly.
+/// Maps between source-image coordinates (where spots and mask strokes
+/// live) and the screen, for a preview rendered with all of the edit's
+/// geometry. The pipeline applies straighten, keystone, rotate (clockwise),
+/// flips, then crop; `to_screen` follows that order and `to_source` inverts
+/// it. Straighten and keystone keep the image's size, so they're done here in
+/// source units where the height is 1 and the width is `source_aspect`.
 struct SourceProjection {
     /// Screen rect of the whole displayed image (zoomed, not clipped).
     img_rect: egui::Rect,
     /// Width/height of the source image before geometry.
     source_aspect: f32,
+    /// Straighten angle in radians, clockwise on screen.
+    straighten: f32,
+    /// Keystone homographies, source → output and back (see
+    /// `gpu_pipeline::keystone_homographies`).
+    keystone: Option<([f64; 9], [f64; 9])>,
     rotate: i32,
     flip_h: bool,
     flip_v: bool,
     crop: Option<Rect>,
 }
 
+/// Applies a row-major homography to `(x, y)`.
+fn apply_homography(m: &[f64; 9], x: f32, y: f32) -> (f32, f32) {
+    let (x, y) = (x as f64, y as f64);
+    let d = m[6] * x + m[7] * y + m[8];
+    if d.abs() < 1e-12 {
+        return (x as f32, y as f32);
+    }
+    (((m[0] * x + m[1] * y + m[2]) / d) as f32, ((m[3] * x + m[4] * y + m[5]) / d) as f32)
+}
+
 impl SourceProjection {
+    fn new(img_rect: egui::Rect, source_aspect: f32, state: &EditState) -> Self {
+        Self {
+            img_rect,
+            source_aspect,
+            straighten: state.straighten.to_radians(),
+            keystone: crate::processing::gpu_pipeline::keystone_homographies(
+                state,
+                source_aspect as f64,
+                1.0,
+            ),
+            rotate: state.rotate,
+            flip_h: state.flip_h,
+            flip_v: state.flip_v,
+            crop: state.crop.clone(),
+        }
+    }
+
+    /// Straighten then keystone, source → their output, both normalized.
+    fn warp(&self, [u, v]: [f32; 2]) -> [f32; 2] {
+        let a = self.source_aspect;
+        let (mut x, mut y) = (u * a, v);
+        if self.straighten != 0.0 {
+            let (sin, cos) = self.straighten.sin_cos();
+            let (dx, dy) = (x - a / 2.0, y - 0.5);
+            (x, y) = (dx * cos - dy * sin + a / 2.0, dx * sin + dy * cos + 0.5);
+        }
+        if let Some((forward, _)) = &self.keystone {
+            (x, y) = apply_homography(forward, x, y);
+        }
+        [x / a, y]
+    }
+
+    /// Inverse of `warp`.
+    fn unwarp(&self, [u, v]: [f32; 2]) -> [f32; 2] {
+        let a = self.source_aspect;
+        let (mut x, mut y) = (u * a, v);
+        if let Some((_, inverse)) = &self.keystone {
+            (x, y) = apply_homography(inverse, x, y);
+        }
+        if self.straighten != 0.0 {
+            let (sin, cos) = (-self.straighten).sin_cos();
+            let (dx, dy) = (x - a / 2.0, y - 0.5);
+            (x, y) = (dx * cos - dy * sin + a / 2.0, dx * sin + dy * cos + 0.5);
+        }
+        [x / a, y]
+    }
+
     fn to_screen(&self, p: [f32; 2]) -> egui::Pos2 {
-        let [mut u, mut v] = p;
+        let [mut u, mut v] = self.warp(p);
         (u, v) = match self.rotate.rem_euclid(360) {
             90 => (1.0 - v, u),
             180 => (1.0 - u, 1.0 - v),
@@ -2285,7 +2333,7 @@ impl SourceProjection {
             270 => (1.0 - v, u),
             _ => (u, v),
         };
-        [u, v]
+        self.unwarp([u, v])
     }
 
     /// A spot radius (fraction of the source's shorter side) in screen pixels.
@@ -2363,21 +2411,26 @@ fn source_distance(a: [f32; 2], b: [f32; 2], aspect: f32) -> f32 {
 /// `proj` (rotate, flip and crop are axis-aligned, so its four corners map
 /// to a screen rectangle; the painter's clip rect trims the cropped parts).
 fn draw_source_texture(painter: &egui::Painter, proj: &SourceProjection, texture: egui::TextureId) {
+    // A grid rather than one quad, so it follows keystone's perspective.
+    const CELLS: u32 = 16;
     let mut mesh = egui::Mesh::with_texture(texture);
-    for (source, uv) in [
-        ([0.0, 0.0], egui::pos2(0.0, 0.0)),
-        ([1.0, 0.0], egui::pos2(1.0, 0.0)),
-        ([1.0, 1.0], egui::pos2(1.0, 1.0)),
-        ([0.0, 1.0], egui::pos2(0.0, 1.0)),
-    ] {
-        mesh.vertices.push(egui::epaint::Vertex {
-            pos: proj.to_screen(source),
-            uv,
-            color: egui::Color32::WHITE,
-        });
+    for row in 0..=CELLS {
+        for col in 0..=CELLS {
+            let uv = egui::pos2(col as f32 / CELLS as f32, row as f32 / CELLS as f32);
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: proj.to_screen([uv.x, uv.y]),
+                uv,
+                color: egui::Color32::WHITE,
+            });
+        }
     }
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
+    let at = |row: u32, col: u32| row * (CELLS + 1) + col;
+    for row in 0..CELLS {
+        for col in 0..CELLS {
+            mesh.add_triangle(at(row, col), at(row, col + 1), at(row + 1, col + 1));
+            mesh.add_triangle(at(row, col), at(row + 1, col + 1), at(row + 1, col));
+        }
+    }
     painter.add(egui::Shape::mesh(mesh));
 }
 
@@ -3625,7 +3678,7 @@ mod tests {
     }
 
     #[test]
-    fn spot_mode_drops_only_non_invertible_geometry() {
+    fn spot_and_mask_modes_render_all_geometry() {
         let mut v = super::Viewer::new(0, PreviewBackend::Auto);
         v.edit_state.rotate = 90;
         v.edit_state.flip_h = true;
@@ -3633,18 +3686,13 @@ mod tests {
         v.edit_state.keystone.vertical = 0.2;
         v.edit_state.crop = Some(crop(0.1, 0.1, 0.5, 0.5));
         v.edit_state.exposure = 0.7;
-
+        let full = edit_state_signature(&v.edit_state);
         v.set_spot_mode(true);
-        let r = v.render_state();
-        assert_eq!(r.straighten, 0.0);
-        assert_eq!(r.keystone.vertical, 0.0);
-        // Exactly invertible geometry stays, so spots are placed on the
-        // oriented, cropped view.
-        assert_eq!((r.rotate, r.flip_h), (90, true));
-        assert!(r.crop.is_some());
-        assert_eq!(r.exposure, 0.7, "color edits stay on while placing spots");
-        assert!(v.needs_process);
-        assert_eq!(v.edit_state.straighten, 3.0, "saved geometry is untouched");
+        assert_eq!(edit_state_signature(&v.render_state()), full);
+        assert!(!v.needs_process, "the view doesn't change, so no re-render");
+        v.set_mask_mode(true);
+        assert_eq!(edit_state_signature(&v.render_state()), full);
+        assert!(!v.needs_process);
     }
 
     #[test]
@@ -3825,18 +3873,6 @@ mod tests {
     }
 
     #[test]
-    fn mask_mode_renders_like_spot_mode() {
-        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
-        v.edit_state.rotate = 90;
-        v.edit_state.straighten = 3.0;
-        v.edit_state.crop = Some(crop(0.1, 0.1, 0.5, 0.5));
-        v.set_mask_mode(true);
-        let r = v.render_state();
-        assert_eq!((r.rotate, r.straighten), (90, 0.0));
-        assert!(r.crop.is_some());
-    }
-
-    #[test]
     fn new_masks_get_unique_names_and_are_selected() {
         let mut v = super::Viewer::new(0, PreviewBackend::Auto);
         v.add_mask();
@@ -3900,14 +3936,8 @@ mod tests {
         flip_v: bool,
         crop: Option<crate::state::Rect>,
     ) -> SourceProjection {
-        SourceProjection {
-            img_rect,
-            source_aspect,
-            rotate,
-            flip_h,
-            flip_v,
-            crop,
-        }
+        let state = EditState { rotate, flip_h, flip_v, crop, ..EditState::default() };
+        SourceProjection::new(img_rect, source_aspect, &state)
     }
 
     #[test]
@@ -3924,6 +3954,80 @@ mod tests {
                         "rotate {rotate} flip {fh}/{fv}: {back:?}"
                     );
                 }
+            }
+        }
+    }
+
+    fn straightened_keystoned(rotate: i32, flip_h: bool) -> EditState {
+        let mut state = EditState {
+            rotate,
+            flip_h,
+            straighten: 4.0,
+            crop: Some(crop(0.1, 0.15, 0.75, 0.7)),
+            ..EditState::default()
+        };
+        state.keystone.vertical = 0.1;
+        state.keystone.horizontal = -0.05;
+        state
+    }
+
+    #[test]
+    fn projection_round_trips_through_straighten_and_keystone() {
+        let img = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(300.0, 200.0));
+        for rotate in [0, 90, 180, 270] {
+            for flip in [false, true] {
+                let proj = SourceProjection::new(img, 1.5, &straightened_keystoned(rotate, flip));
+                for p in [[0.3, 0.6], [0.5, 0.5], [0.9, 0.1]] {
+                    let back = proj.to_source(proj.to_screen(p));
+                    assert!(
+                        (back[0] - p[0]).abs() < 1e-4 && (back[1] - p[1]).abs() < 1e-4,
+                        "rotate {rotate} flip {flip}: {p:?} came back as {back:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn projection_lands_where_the_pipeline_puts_a_point() {
+        // A white dot on black, run through the real geometry pipeline.
+        let (w, h) = (300u32, 200u32);
+        let p = [0.3_f32, 0.6_f32];
+        let mut src = image::RgbaImage::from_pixel(w, h, image::Rgba([0, 0, 0, 255]));
+        let (px, py) = ((p[0] * w as f32) as i32, (p[1] * h as f32) as i32);
+        for y in py - 2..=py + 2 {
+            for x in px - 2..=px + 2 {
+                src.put_pixel(x as u32, y as u32, image::Rgba([255, 255, 255, 255]));
+            }
+        }
+        for rotate in [0, 90, 180, 270] {
+            for flip in [false, true] {
+                let state = straightened_keystoned(rotate, flip);
+                let out = crate::processing::transform::apply_geometry(
+                    DynamicImage::ImageRgba8(src.clone()),
+                    &state,
+                )
+                .to_rgba8();
+                let (mut sx, mut sy, mut n) = (0.0, 0.0, 0.0);
+                for (x, y, px) in out.enumerate_pixels() {
+                    if px[0] > 128 {
+                        (sx, sy, n) = (sx + x as f32 + 0.5, sy + y as f32 + 0.5, n + 1.0);
+                    }
+                }
+                assert!(n > 0.0, "rotate {rotate} flip {flip}: dot not found");
+                let rect = egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(out.width() as f32, out.height() as f32),
+                );
+                let at = SourceProjection::new(rect, w as f32 / h as f32, &state).to_screen([
+                    (px as f32 + 0.5) / w as f32,
+                    (py as f32 + 0.5) / h as f32,
+                ]);
+                let found = egui::pos2(sx / n, sy / n);
+                assert!(
+                    at.distance(found) < 1.5,
+                    "rotate {rotate} flip {flip}: projected {at:?}, pipeline put it at {found:?}"
+                );
             }
         }
     }

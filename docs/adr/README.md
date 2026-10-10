@@ -60,6 +60,7 @@ mechanics of adding one.
 | [0020](0020-portable-gpu-backend-selection.md) | Select each platform's primary GPU backend instead of Vulkan only | Accepted |
 | [0021](0021-follow-desktop-color-scheme.md) | Follow the desktop's light/dark setting through the XDG portal | Accepted |
 | [0022](0022-draw-own-window-frame.md) | Draw Photograph's own window frame | Accepted |
+| [0023](0023-tools-show-all-geometry.md) | The spot and mask tools show all of the edit's geometry | Accepted |
 
 ## Decision Relationship
 

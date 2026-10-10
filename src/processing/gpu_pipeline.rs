@@ -296,6 +296,31 @@ fn compute_geometry_output_dims(state: &EditState, src_w: u32, src_h: u32) -> (u
     (w.max(1), h.max(1))
 }
 
+/// Keystone's control points for a `w`×`h` image: the source corners (TL,
+/// TR, BR, BL) and where they land. Same as transform.rs:apply_keystone.
+fn keystone_corners(v: f64, hz: f64, w: f64, h: f64) -> ([(f64, f64); 4], [(f64, f64); 4]) {
+    let src = [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)];
+    let dst = [
+        (v.max(0.0) * w, hz.max(0.0) * h),
+        (w - v.max(0.0) * w, (-hz).max(0.0) * h),
+        (w - (-v).max(0.0) * w, h - (-hz).max(0.0) * h),
+        ((-v).max(0.0) * w, h - hz.max(0.0) * h),
+    ];
+    (src, dst)
+}
+
+/// Keystone as homographies for a `w`×`h` image, both row-major: source →
+/// output and output → source. `None` without keystone.
+pub fn keystone_homographies(state: &EditState, w: f64, h: f64) -> Option<([f64; 9], [f64; 9])> {
+    let v = state.keystone.vertical;
+    let hz = state.keystone.horizontal;
+    if v.abs() <= STATE_EPS && hz.abs() <= STATE_EPS {
+        return None;
+    }
+    let (src, dst) = keystone_corners(v as f64, hz as f64, w, h);
+    Some((compute_homography(&src, &dst)?, compute_homography(&dst, &src)?))
+}
+
 /// Compute the 3×3 inverse perspective matrix for dst→src mapping.
 /// Replicates the control-point logic from transform.rs:apply_keystone.
 /// Returns [f32; 9] in row-major order, or identity if no keystone.
@@ -306,25 +331,7 @@ fn compute_perspective_matrix(state: &EditState, w: f32, h: f32) -> [f32; 9] {
         return [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
     }
 
-    // Source corners: TL, TR, BR, BL (same as CPU)
-    let src: [(f64, f64); 4] = [
-        (0.0, 0.0),
-        (w as f64, 0.0),
-        (w as f64, h as f64),
-        (0.0, h as f64),
-    ];
-
-    // Destination corners with perspective shifts
-    let v = v as f64;
-    let hz = hz as f64;
-    let w64 = w as f64;
-    let h64 = h as f64;
-    let dst: [(f64, f64); 4] = [
-        (v.max(0.0) * w64, hz.max(0.0) * h64),
-        (w64 - v.max(0.0) * w64, (-hz).max(0.0) * h64),
-        (w64 - (-v).max(0.0) * w64, h64 - (-hz).max(0.0) * h64),
-        ((-v).max(0.0) * w64, h64 - hz.max(0.0) * h64),
-    ];
+    let (src, dst) = keystone_corners(v as f64, hz as f64, w as f64, h as f64);
 
     // imageproc's from_control_points(src, dst) creates P mapping input→output.
     // warp() internally inverts P to get output→input for sampling.
