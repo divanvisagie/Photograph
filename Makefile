@@ -9,6 +9,8 @@ RUNTIME_ICON_PNG := assets/$(APP_NAME)-icon-128.png
 
 ifeq ($(UNAME_S),Linux)
 PLATFORM := linux
+else ifeq ($(UNAME_S),Darwin)
+PLATFORM := macos
 else
 PLATFORM := unsupported
 endif
@@ -28,8 +30,12 @@ LINUX_ICON_DST := $(PKG_ROOT)/usr/share/icons/hicolor/scalable/apps/$(APP_NAME).
 ICON_TMP_DIR := target/icons
 
 RELEASE_BRANCH := master
-TAG := v$(VERSION)
-SITE_PAGE := docs/index.html
+# The version `make release` cuts: V=x.y.z if given (it may be the current,
+# never-tagged version), else the current one bumped by BUMP (patch, minor
+# or major; patch by default).
+BUMP ?= patch
+NEXT_VERSION := $(or $(V),$(shell echo "$(VERSION)" | awk -F. -v b="$(BUMP)" '{ if (b == "major") print $$1+1 ".0.0"; else if (b == "minor") print $$1 "." $$2+1 ".0"; else if (b == "patch") print $$1 "." $$2 "." $$3+1 }'))
+TAG := v$(NEXT_VERSION)
 # Optional release notes (Markdown): make release NOTES=path/to/notes.md.
 # Written notes come first; GitHub's generated changelog link follows.
 NOTES ?=
@@ -37,7 +43,7 @@ NOTES_FLAG := $(if $(NOTES),--notes-file "$(NOTES)")
 
 .DEFAULT_GOAL := help
 
-.PHONY: help dev build build-linux build-deb build-unsupported install install-linux install-unsupported clean clean-deb clean-icons icons icon-runtime release release-check bump docs
+.PHONY: help dev build build-linux build-deb build-unsupported install install-linux install-unsupported clean clean-deb clean-icons icons icon-runtime release release-check docs dmg build-macos install-macos
 
 help: ## Show this help
 	@echo "Usage: make <target>"
@@ -115,25 +121,44 @@ clean: ## Remove all build output (fixes cargo run running a stale build)
 clean-deb: ## Remove built .deb artifacts
 	rm -rf "$(DEB_DIR)"
 
-# Releases are cut from a clean, pushed $(RELEASE_BRANCH): the tag is created
-# locally on HEAD and pushed before `gh release create --verify-tag`, so the
-# release always points at the exact commit the .deb was built from.
-# The crates.io publish runs last: it can't be undone, and if it fails the
-# GitHub release is already out, so rerun just `cargo publish`.
-release: release-check build-deb ## Tag HEAD, push it, publish the .deb as a GitHub release and the crate to crates.io (NOTES=file.md for written notes)
-	@test -z "$$(git status --porcelain)" || { echo "the build modified tracked files (stale Cargo.lock?) — commit them and retry"; exit 1; }
-	cp "$(DEB_PATH)" "$(LATEST_DEB_PATH)"
+# A release is driven from here and finished by .github/workflows/release.yml
+# (see ADR-0024). This target bumps the version, tags and pushes, opens a
+# draft GitHub release and publishes the crate; the workflow then builds the
+# .deb and .dmg on GitHub, attaches them, publishes the release and points
+# the website's download links at them.
+#
+#   make release                 # next patch version
+#   make release BUMP=minor      # or major
+#   make release V=0.5.0         # a given version (the current one if untagged)
+#   make release NOTES=notes.md  # written notes above the generated changelog
+#
+# The crate is checked with a dry run before anything is pushed, and
+# published last: crates.io can't be undone, and if the upload fails the tag
+# and draft are already out, so rerun just `cargo publish`.
+release: ## Bump, tag and push a release, publish the crate; CI builds the .deb/.dmg (BUMP=minor|major, V=x.y.z, NOTES=file.md)
+	git pull --ff-only --quiet origin "$(RELEASE_BRANCH)"
+	@$(MAKE) --no-print-directory release-check
+	@if [ "$(NEXT_VERSION)" != "$(VERSION)" ]; then \
+		sed -i '0,/^version = ".*"/s//version = "$(NEXT_VERSION)"/' Cargo.toml && \
+		cargo update --workspace --quiet && \
+		git commit --quiet -m "Release $(TAG)" Cargo.toml Cargo.lock && \
+		echo "Bumped $(VERSION) -> $(NEXT_VERSION)"; \
+	fi
+	cargo publish --dry-run --quiet
 	git tag -a "$(TAG)" -m "$(TAG)"
-	git push origin "$(TAG)"
-	gh release create "$(TAG)" "$(DEB_PATH)" "$(LATEST_DEB_PATH)" --title "$(TAG)" $(NOTES_FLAG) --generate-notes --verify-tag
+	git push --quiet origin "$(RELEASE_BRANCH)" "$(TAG)"
+	gh release create "$(TAG)" --draft --title "$(TAG)" $(NOTES_FLAG) --generate-notes --verify-tag
 	cargo publish
 	# publish's verify build shares target/debug and leaves the dev build's
 	# fingerprint pointing at target/package's sources, so `cargo run` stops
 	# seeing edits to src/ until this crate's build is cleaned.
 	cargo clean -p $(APP_NAME)
-	@echo "Released $(TAG) with $(DEB_PATH) and published $(APP_NAME) $(VERSION) to crates.io"
+	@echo "Released $(APP_NAME) $(NEXT_VERSION) to crates.io and pushed $(TAG)."
+	@echo "GitHub is building the .deb and .dmg; the release goes public, and the site's"
+	@echo "downloads move to $(TAG), when they're done. Follow it with: gh run watch"
 
-release-check: ## Verify a release can be cut (on master, clean, pushed, version not yet tagged)
+release-check: ## Verify a release can be cut (on master, clean, pushed, version valid and not yet tagged)
+	@echo "$(NEXT_VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "can't release '$(NEXT_VERSION)': use V=x.y.z or BUMP=patch|minor|major"; exit 1; }
 	@test -z "$(NOTES)" || test -f "$(NOTES)" || { echo "NOTES file not found: $(NOTES)"; exit 1; }
 	@command -v gh >/dev/null 2>&1 || { echo "gh CLI is required: https://cli.github.com"; exit 1; }
 	@branch="$$(git rev-parse --abbrev-ref HEAD)"; \
@@ -141,31 +166,25 @@ release-check: ## Verify a release can be cut (on master, clean, pushed, version
 	@test -z "$$(git status --porcelain)" || { echo "working tree has uncommitted changes"; exit 1; }
 	@git fetch --quiet --tags origin "$(RELEASE_BRANCH)"
 	@test "$$(git rev-parse HEAD)" = "$$(git rev-parse "origin/$(RELEASE_BRANCH)")" || { echo "HEAD differs from origin/$(RELEASE_BRANCH) — push or pull first"; exit 1; }
-	@! git rev-parse -q --verify "refs/tags/$(TAG)" >/dev/null || { echo "$(TAG) is already tagged — bump the version first: make bump V=x.y.z"; exit 1; }
-	@grep -q "releases/download/$(TAG)/$(APP_NAME)_$(DEB_VERSION)_$(ARCH).deb" "$(SITE_PAGE)" || { echo "$(SITE_PAGE) doesn't link $(TAG)'s .deb — bump with make bump V=x.y.z"; exit 1; }
+	@! git rev-parse -q --verify "refs/tags/$(TAG)" >/dev/null || { echo "$(TAG) is already tagged — release the next version (the default) or pick another with V=x.y.z"; exit 1; }
 	@echo "Ready to release $(TAG) from $(RELEASE_BRANCH) at $$(git rev-parse --short HEAD)"
 
-bump: ## Set the version, point the site download at it, and commit: make bump V=x.y.z
-	@echo "$(V)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "usage: make bump V=x.y.z"; exit 1; }
-	@test -z "$$(git status --porcelain)" || { echo "working tree has uncommitted changes"; exit 1; }
-	sed -i '0,/^version = ".*"/s//version = "$(V)"/' Cargo.toml
-	cargo update --workspace --quiet
-	@# Point the landing page's download button and wget line at the new
-	@# release's versioned .deb, so each version downloads under its own name.
-	sed -i -E \
-		-e 's#releases/download/v[0-9.]+/$(APP_NAME)_[0-9.]+-[0-9]+_$(ARCH)\.deb#releases/download/v$(V)/$(APP_NAME)_$(V)-$(DEB_REVISION)_$(ARCH).deb#g' \
-		-e 's#\./$(APP_NAME)_[0-9.]+-[0-9]+_$(ARCH)\.deb#./$(APP_NAME)_$(V)-$(DEB_REVISION)_$(ARCH).deb#g' \
-		-e 's#Download \.deb \(v[0-9.]+\)#Download .deb (v$(V))#g' \
-		"$(SITE_PAGE)"
-	git commit --quiet -m "Bump version to $(V)" Cargo.toml Cargo.lock "$(SITE_PAGE)"
-	@echo "Bumped $(VERSION) -> $(V)"
+build-macos: dmg
+
+install-macos: dmg
+	@echo "Open target/dmg/Photograph-$(VERSION).dmg and drag Photograph to Applications."
+
+dmg: ## Build a universal Photograph.app in a .dmg into target/dmg/ (macOS only)
+	@test "$(UNAME_S)" = Darwin || { echo "make dmg runs on macOS (the release workflow builds it on GitHub)"; exit 1; }
+	@command -v rsvg-convert >/dev/null 2>&1 || { echo "rsvg-convert is required: brew install librsvg"; exit 1; }
+	packaging/macos/build-dmg.sh
 
 build-unsupported:
-	@echo "Unsupported platform: $(UNAME_S). Photograph is Linux-only (see docs/adr/0012-drop-macos-support-linux-only.md)."
+	@echo "Unsupported platform: $(UNAME_S). Photograph builds on Linux and macOS (see docs/adr/0024-macos-again-released-by-ci.md)."
 	@exit 1
 
 install-unsupported:
-	@echo "Unsupported platform: $(UNAME_S). Photograph is Linux-only (see docs/adr/0012-drop-macos-support-linux-only.md)."
+	@echo "Unsupported platform: $(UNAME_S). Photograph builds on Linux and macOS (see docs/adr/0024-macos-again-released-by-ci.md)."
 	@exit 1
 
 clean-icons: ## Remove temporary icon build files

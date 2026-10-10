@@ -49,7 +49,7 @@ mechanics of adding one.
 | [0009](0009-raw-highlight-recovery.md) | Apply highlight recovery during RAW develop, before sRGB gamma | Accepted |
 | [0010](0010-snap-packaging-vulkan-gpu-2404.md) | Package for Linux via snap, using the gpu-2404 content interface for Vulkan | Superseded by [ADR-0016](0016-drop-snap-packaging.md) |
 | [0011](0011-restore-macos-metal-backend.md) | Restore macOS support via a Metal GPU backend | Superseded by [ADR-0012](0012-drop-macos-support-linux-only.md) |
-| [0012](0012-drop-macos-support-linux-only.md) | Drop macOS support; Photograph is Linux-only | Accepted |
+| [0012](0012-drop-macos-support-linux-only.md) | Drop macOS support; Photograph is Linux-only | Superseded by [ADR-0024](0024-macos-again-released-by-ci.md) |
 | [0013](0013-network-mounts-deb-only.md) | Network drive browsing is .deb-only; the Snap build disables it | Superseded by [ADR-0015](0015-drop-specialized-network-mounts.md) |
 | [0014](0014-unify-grid-selection-model.md) | Unify grid selection to drive fullscreen view, filmstrip, and Render targeting | Accepted |
 | [0015](0015-drop-specialized-network-mounts.md) | Drop specialized network-mount logic in favor of local mounts | Superseded by [ADR-0017](0017-discover-mounts-for-sidebar.md) |
@@ -61,6 +61,7 @@ mechanics of adding one.
 | [0021](0021-follow-desktop-color-scheme.md) | Follow the desktop's light/dark setting through the XDG portal | Accepted |
 | [0022](0022-draw-own-window-frame.md) | Draw Photograph's own window frame | Accepted |
 | [0023](0023-tools-show-all-geometry.md) | The spot and mask tools show all of the edit's geometry | Accepted |
+| [0024](0024-macos-again-released-by-ci.md) | Ship a macOS build again, with every release built on GitHub from one `make release` | Accepted |
 
 ## Decision Relationship
 
@@ -69,6 +70,7 @@ flowchart TD
     P1[0001: Linux + macOS packaging] --> P8[0008: Drop macOS]
     P8 --> P11[0011: Restore macOS, Metal backend]
     P11 --> P12[0012: Drop macOS, Linux-only]
+    P12 --> P24[0024: macOS again, released by CI]
     P12 --> A[0003: Vulkan GPU policy]
     A --> B[0004: Debug-only CPU fallback]
     A --> C[0005: Shared preview/export GPU contract]
@@ -85,6 +87,7 @@ flowchart TD
   or it misbehaves on a desktop — see [ADR-0022](0022-draw-own-window-frame.md).
 - GPU texture-size limits materially impact export workflows.
 - Future `wgpu`/driver changes require backend policy adjustments.
-- Renewed macOS demand that native alternatives (Photos, third-party RAW editors) don't cover —
-  see ADR-0012 for what it would actually cost to support again.
+- The GPU pipeline needs Vulkan-only features, or the macOS build keeps breaking releases — the
+  point to drop the `.dmg` again rather than hold Linux back (see
+  [ADR-0024](0024-macos-again-released-by-ci.md)).
 - Storefront discovery (App Center, Flathub) or sandboxed installs become a priority again — see [ADR-0016](0016-drop-snap-packaging.md) for why the Snap was dropped and the Flathub/APT-repo options.

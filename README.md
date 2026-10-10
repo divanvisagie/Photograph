@@ -13,7 +13,8 @@ Photograph focuses on practical desktop workflows: browsing folders, opening ima
 
 Active project (MVP is usable and still evolving).
 
-Current support intent: Ubuntu Linux only (see [ADR-0012](docs/adr/0012-drop-macos-support-linux-only.md)).
+Built and used on Ubuntu Linux; each release also ships a macOS build (see
+[ADR-0024](docs/adr/0024-macos-again-released-by-ci.md)).
 
 ## Screenshot
 
@@ -52,6 +53,22 @@ Older versions and release notes are on [GitHub Releases](https://github.com/div
 **Upgrading:** the same two commands upgrade an existing install. Don't upgrade by opening the
 `.deb` in Ubuntu's App Center: when any version is already installed it shows a greyed-out
 "Installed" and won't upgrade ([app-center#2190](https://github.com/ubuntu/app-center/issues/2190)).
+
+### macOS (.dmg)
+
+Download [`Photograph.dmg`](https://github.com/divanvisagie/Photograph/releases/latest/download/Photograph.dmg)
+(macOS 11 or later, Apple Silicon and Intel), open it and drag Photograph to Applications. The app
+isn't signed by Apple, so macOS blocks it the first time: open it once, then allow it under
+**System Settings → Privacy & Security → Open Anyway**. If macOS says it's damaged, clear the
+download flag instead:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Photograph.app
+```
+
+The sidebar's mounted drives and network shares are Linux-only.
+
+### Build it yourself
 
 Or build and install the `.deb` locally via the `Makefile` (see [Packaging](#packaging)):
 
@@ -134,8 +151,10 @@ PHOTOGRAPH_DEBUG_ALLOW_CPU_FALLBACK=1 PHOTOGRAPH_PREVIEW_BACKEND=cpu cargo run -
 
 ## Packaging
 
-The `Makefile` builds a `.deb`. `make build` builds it (`make build-deb`); `make install` builds and
-installs it (`make install-linux`, aliased from `make install`).
+The `Makefile` builds a `.deb` on Linux. `make build` builds it (`make build-deb`); `make install`
+builds and installs it (`make install-linux`, aliased from `make install`). On macOS, `make dmg`
+builds a universal `Photograph.app` in a `.dmg` (`packaging/macos/`, needs
+`brew install librsvg` for the icon).
 
 Icon assets are derived from the SVG source at `packaging/linux/photograph.svg`:
 
@@ -152,41 +171,41 @@ make                # list all targets
 make build          # build the .deb
 make build-deb      # build the .deb
 make install        # build and install the .deb
-make release        # tag and publish a GitHub release with the .deb (see Releasing)
+make dmg            # build the .dmg (macOS only)
+make clean          # remove all build output
+make release        # release a new version, built by CI (see Releasing)
 ```
 
 ### Releasing
 
-Releases are cut from `master` only. The tag and the `.deb` version both come from `version` in
-`Cargo.toml`.
+One command, run on a clean, pushed `master`:
 
-1. Bump the version, then merge to `master` and push:
+```bash
+make release                 # next patch version; BUMP=minor|major or V=x.y.z to choose
+make release NOTES=notes.md  # your notes first, then the generated changelog
+```
 
-   ```bash
-   make bump V=0.1.4   # updates Cargo.toml, Cargo.lock and the site download link, then commits
-   ```
+It bumps the version, tags and pushes, opens a draft GitHub release and publishes the crate to
+crates.io. The [release workflow](.github/workflows/release.yml) then builds the `.deb` and the
+`.dmg` on GitHub, attaches them, publishes the release and points the website's download links
+at them ([ADR-0024](docs/adr/0024-macos-again-released-by-ci.md)). Pull afterwards: the link
+update is a commit on `master`. It needs the `gh` CLI, logged in.
 
-2. On `master`, with the bump pushed:
+`make release` first runs `make release-check`, which fails if you're not on `master`, if the
+working tree has uncommitted changes, if `HEAD` isn't the same as `origin/master`, or if the
+version is already tagged.
 
-   ```bash
-   make release                      # GitHub's generated changelog link only
-   make release NOTES=notes.md       # your notes first, then the changelog link
-   ```
+Each release gets two copies of each package: the versioned one, and an unversioned
+`photograph_amd64.deb` and `Photograph.dmg` at stable "latest" URLs.
 
-`make release` first runs `make release-check`. The check fails if you're not on `master`, if the
-working tree has uncommitted changes, if `HEAD` isn't the same as `origin/master`, or if the version
-is already tagged. `make release` then builds the `.deb`, creates an annotated `v<version>` tag on
-`HEAD`, pushes the tag, and publishes the GitHub release with `--verify-tag`. This way the release
-points at the exact commit the `.deb` was built from. It needs the `gh` CLI, logged in.
-
-Each release gets two copies of the `.deb`: the versioned one, and an unversioned
-`photograph_amd64.deb` at a stable "latest" URL.
-
-- **Landing page** (`docs/index.html`): the download button and its `wget` line link the
-  *versioned* file, so each version downloads under its own name. `make bump` rewrites those links
-  to the new version, and `make release-check` refuses to release if they don't match.
+- **Landing page** (`docs/index.html`): the download buttons and the `wget` line link the
+  *versioned* files, so each version downloads under its own name.
+  `scripts/update-site-links.sh` rewrites them; the workflow runs it once the release is out.
 - **Terminal instructions:** they use the stable URL with `wget -O`, so a re-download overwrites
   the old file instead of being saved beside it.
+
+To build both packages without releasing anything, run the workflow by hand (Actions → Release →
+Run workflow); they're kept as workflow artifacts.
 
 Linux packaging assets live under `packaging/linux/`.
 

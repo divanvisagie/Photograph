@@ -10,7 +10,7 @@ homepage = "https://github.com/divanvisagie/Photograph"
 readme = "README.md"
 keywords = ["photo", "raw", "editor", "image", "photography"]
 categories = ["multimedia::images", "graphics"]
-exclude = ["docs/", "target/", "Makefile", ".claude/"]
+exclude = ["docs/", "target/", "Makefile", ".claude/", ".github/", "scripts/", "packaging/macos/"]
 
 [features]
 default = []

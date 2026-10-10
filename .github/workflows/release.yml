@@ -1,0 +1,113 @@
+# Builds the downloads for a release (see ADR-0024). `make release` bumps the
+# version, pushes a vX.Y.Z tag, opens a draft GitHub release and publishes
+# the crate; this workflow takes it from the tag:
+#
+#   deb, dmg -> attach both to the release and publish it -> point the
+#   website's download links at them
+#
+# Run it by hand (Actions -> Release -> Run workflow) to build both packages
+# without releasing anything: they're kept as workflow artifacts.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deb:
+    name: Linux .deb
+    # The oldest supported runner, so the binary's glibc floor stays low.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev
+      - name: Build the .deb
+        run: |
+          make build-deb ARCH=amd64
+          cp target/deb/photograph_*-*_amd64.deb target/deb/photograph_amd64.deb
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb
+          path: target/deb/*.deb
+          if-no-files-found: error
+
+  dmg:
+    name: macOS .dmg
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Install librsvg (renders the icon)
+        run: brew install librsvg
+      - name: Build the .dmg
+        run: make dmg
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dmg
+          path: target/dmg/*.dmg
+          if-no-files-found: error
+
+  publish:
+    name: Attach to the release and publish it
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [deb, dmg]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Attach the packages and publish the release
+        run: |
+          # make release opens a draft; make one if the tag was pushed some other way.
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --draft --verify-tag
+          gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+
+  site:
+    name: Point the website at the new downloads
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: master
+      - name: Update the download links and push
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          scripts/update-site-links.sh "$version"
+          if git diff --quiet; then
+            echo "The site already links v$version"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Point the website's downloads at v$version"
+          git pull --rebase origin master
+          git push origin HEAD:master
+      - name: Rebuild GitHub Pages
+        # Pushes made with the workflow's token don't start other workflows,
+        # so ask Pages for a build directly.
+        run: gh api -X POST "repos/$GITHUB_REPOSITORY/pages/builds"

@@ -14,7 +14,7 @@
     divanv.com's page shell (nav, footer, stylesheets), taking only what sits
     between the content markers below plus the <title> and description above.
     See the blog repo's build_project_shell and mimisbrunnr/heimdallr/caddy.
-    Keep both markers; `make bump` still edits the download links in here.
+    Keep both markers; scripts/update-site-links.sh edits the download links in here.
   -->
   <div class="content">
     <div class="post-content">
@@ -47,7 +47,9 @@
 
       <h2>Download</h2>
 
-      <p>Available as a <code>.deb</code> for Ubuntu and Debian-based distributions (x86-64).</p>
+      <h3>Linux</h3>
+
+      <p>A <code>.deb</code> for Ubuntu and Debian-based distributions (x86-64).</p>
       <p>
         <a class="button" href="https://github.com/divanvisagie/Photograph/releases/download/v0.4.4/photograph_0.4.4-1_amd64.deb">Download .deb (v0.4.4)</a>
       </p>
@@ -61,17 +63,36 @@ sudo apt install ./photograph_0.4.4-1_amd64.deb</code></pre>
         from the folder you downloaded it to:
       </p>
 <pre><code>sudo apt install ./photograph_0.4.4-1_amd64.deb</code></pre>
-      <p>
-        Older versions and release notes are on the
-        <a href="https://github.com/divanvisagie/Photograph/releases">releases page</a>.
-      </p>
       <p class="note">
         Requires a Vulkan-capable GPU. Run <code>vulkaninfo --summary</code> to verify.
       </p>
 
+      <h3>macOS</h3>
+
+      <p>A <code>.dmg</code> for macOS 11 or later, on Apple Silicon and Intel.</p>
+      <p>
+        <a class="button" href="https://github.com/divanvisagie/Photograph/releases/download/v0.4.4/Photograph-0.4.4.dmg">Download .dmg (v0.4.4)</a>
+      </p>
+      <p>
+        Open it and drag Photograph to Applications. The app isn't signed by Apple, so
+        macOS blocks it the first time: open it once, then allow it under
+        <strong>System Settings &rarr; Privacy &amp; Security &rarr; Open Anyway</strong>.
+        If macOS says it's damaged, clear the download flag instead:
+      </p>
+<pre><code>xattr -dr com.apple.quarantine /Applications/Photograph.app</code></pre>
+      <p class="note">
+        Photograph is built and used on Linux. The macOS build is produced automatically for each
+        release; the mounted drives and network shares in the sidebar are Linux-only.
+      </p>
+
+      <p>
+        Older versions and release notes are on the
+        <a href="https://github.com/divanvisagie/Photograph/releases">releases page</a>.
+      </p>
+
       <p>
         Or install from <a href="https://crates.io/crates/photograph">crates.io</a>
-        (Linux, Rust toolchain and the
+        (Rust toolchain and, on Linux, the
         <a href="https://github.com/divanvisagie/Photograph#ubuntudebian-dependencies">build dependencies</a>
         required):
       </p>
