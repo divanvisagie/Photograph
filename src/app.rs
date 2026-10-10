@@ -1262,6 +1262,10 @@ impl eframe::App for PhotographApp {
         }
     }
 
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        crate::frame::release_grab(ctx, raw_input);
+    }
+
     fn on_exit(&mut self) {
         self.viewer.save_edits();
         self.config.browse_path = Some(self.browser.current_dir.clone());

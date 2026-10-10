@@ -55,7 +55,7 @@ pub fn title_bar(
         // overlap and only empty space moves the window.
         let resp = ui.interact(bar, Id::new("title_bar_drag"), Sense::click_and_drag());
         if resp.drag_started_by(egui::PointerButton::Primary) {
-            ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+            hand_to_compositor(&ctx, ViewportCommand::StartDrag);
         }
         if resp.double_clicked() {
             ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized(&ctx)));
@@ -164,6 +164,47 @@ fn button(ui: &mut egui::Ui, kind: Button) -> egui::Response {
     resp
 }
 
+/// Where the press that a compositor move or resize took over went down.
+fn grab_id() -> Id {
+    Id::new("compositor_grab")
+}
+
+/// Sends a move or resize, which hands the pointer to the compositor until
+/// the button is let go. The compositor keeps that release, so egui would go
+/// on thinking the button is down and the title bar still being dragged —
+/// and the next attempt to move the window would start no new drag and do
+/// nothing. `release_grab` stands in for the lost release.
+fn hand_to_compositor(ctx: &egui::Context, command: ViewportCommand) {
+    let pos = ctx.input(|i| i.pointer.press_origin().or(i.pointer.latest_pos()));
+    if let Some(pos) = pos {
+        ctx.data_mut(|d| d.insert_temp(grab_id(), pos));
+    }
+    ctx.send_viewport_cmd(command);
+}
+
+/// Adds the button release the compositor kept after a move or resize to the
+/// next frame's input (see `hand_to_compositor`). Call from
+/// `App::raw_input_hook`.
+pub fn release_grab(ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+    let Some(pos) = ctx.data_mut(|d| d.remove_temp::<egui::Pos2>(grab_id())) else {
+        return;
+    };
+    // Moved well away first, so the release isn't taken for a click on
+    // whatever is under the press; then gone, as the compositor has it.
+    let away = pos + vec2(1.0e4, 1.0e4);
+    let release = [
+        egui::Event::PointerMoved(away),
+        egui::Event::PointerButton {
+            pos: away,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: raw_input.modifiers,
+        },
+        egui::Event::PointerGone,
+    ];
+    raw_input.events.splice(0..0, release);
+}
+
 /// Which edge or corner of `window` `pos` is on, if any.
 fn edge_at(window: egui::Rect, pos: egui::Pos2) -> Option<ResizeDirection> {
     if !window.contains(pos) {
@@ -227,7 +268,7 @@ pub fn edges(ctx: &egui::Context, radius: u8) {
             let (_, resp) = ui.allocate_exact_size(grab.size(), Sense::drag());
             let resp = resp.on_hover_cursor(cursor(direction));
             if resp.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_pressed()) {
-                ctx.send_viewport_cmd(ViewportCommand::BeginResize(direction));
+                hand_to_compositor(ctx, ViewportCommand::BeginResize(direction));
             }
         });
 }
@@ -238,6 +279,58 @@ mod tests {
 
     fn window() -> egui::Rect {
         egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0))
+    }
+
+    /// Runs a frame of a 800x600 window with just the title bar, through
+    /// `release_grab` like the app's input hook, and returns whether it asked
+    /// the compositor to move the window.
+    fn frame(ctx: &egui::Context, time: f64, events: Vec<egui::Event>) -> bool {
+        let mut input = egui::RawInput {
+            screen_rect: Some(window()),
+            time: Some(time),
+            events,
+            ..Default::default()
+        };
+        release_grab(ctx, &mut input);
+        let output = ctx.run_ui(input, |ui| {
+            egui::Panel::top("bar").show(ui, |ui| title_bar(ui, "Title", true, |_| {}, |_| {}));
+        });
+        output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .any(|c| matches!(c, ViewportCommand::StartDrag))
+    }
+
+    fn press(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        }
+    }
+
+    #[test]
+    fn the_title_bar_moves_the_window_every_time() {
+        let ctx = egui::Context::default();
+        let mut t = 0.0;
+        let mut step = |events| {
+            t += 0.016;
+            frame(&ctx, t, events)
+        };
+        step(vec![egui::Event::PointerMoved(egui::pos2(300.0, 10.0))]);
+        for attempt in 0..3 {
+            let start = egui::pos2(300.0, 10.0);
+            step(vec![egui::Event::PointerMoved(start), press(start, true)]);
+            let mut moved = false;
+            for i in 1..6 {
+                let pos = start + vec2(10.0 * i as f32, 0.0);
+                moved |= step(vec![egui::Event::PointerMoved(pos)]);
+            }
+            assert!(moved, "attempt {attempt} didn't move the window");
+            // The compositor keeps the release; the pointer comes back later.
+            step(vec![egui::Event::PointerGone]);
+        }
     }
 
     #[test]
