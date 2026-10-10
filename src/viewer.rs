@@ -1191,7 +1191,9 @@ impl Viewer {
         let split = self.split_view;
 
         let avail_w = ui.available_width();
-        let img_max_h = ui.available_height().max(180.0);
+        // Leave room for the status bar below, so it stays on screen.
+        let status_bar_h = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+        let img_max_h = (ui.available_height() - status_bar_h).max(180.0);
 
         if loading || (self.processing && texture.is_none()) {
             ui.horizontal(|ui| {
