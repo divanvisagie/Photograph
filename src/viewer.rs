@@ -516,6 +516,22 @@ impl Viewer {
         self.split_view = on;
     }
 
+    /// Backs out one step, for Escape: deselects the selected spot, else
+    /// leaves the active tool or split view. False if there was nothing to
+    /// back out of.
+    pub fn back_out(&mut self) -> bool {
+        if self.spot_mode && self.selected_spot.is_some() {
+            self.selected_spot = None;
+            self.spot_drag = None;
+            return true;
+        }
+        if self.crop_mode || self.spot_mode || self.mask_mode || self.split_view {
+            self.leave_tools();
+            return true;
+        }
+        false
+    }
+
     /// Enters or leaves the spot tool. Entering leaves crop mode; either way
     /// the preview re-renders, since spot mode drops geometry (`render_state`).
     fn set_spot_mode(&mut self, on: bool) {
@@ -1512,9 +1528,6 @@ impl Viewer {
             });
             if delete && !typing {
                 self.delete_selected_spot();
-            }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                self.selected_spot = None;
             }
 
             let hovered = resp.hover_pos().and_then(|pos| {
@@ -3686,6 +3699,23 @@ mod tests {
         assert!(v.split_view && !v.mask_mode);
         v.set_crop_mode(true);
         assert!(v.crop_mode && !v.split_view);
+    }
+
+    #[test]
+    fn back_out_steps_back_one_level_at_a_time() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        assert!(!v.back_out());
+        v.set_spot_mode(true);
+        v.selected_spot = Some(0);
+        assert!(v.back_out());
+        assert!(v.spot_mode && v.selected_spot.is_none());
+        assert!(v.back_out());
+        assert!(!v.spot_mode);
+        v.set_mask_mode(true);
+        assert!(v.back_out() && !v.mask_mode);
+        v.set_split_view(true);
+        assert!(v.back_out() && !v.split_view);
+        assert!(!v.back_out());
     }
 
     #[test]

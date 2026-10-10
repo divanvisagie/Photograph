@@ -893,7 +893,8 @@ impl eframe::App for PhotographApp {
         // Keyboard navigation while viewing a photo (skip while a text field
         // like the sidebar path bar has focus).
         if self.view_mode != ViewMode::Library && ctx.memory(|m| m.focused().is_none()) {
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            // Escape backs out of the active tool before leaving the photo.
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && !self.viewer.back_out() {
                 self.back_to_library();
             }
             if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
