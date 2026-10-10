@@ -613,6 +613,10 @@ impl Viewer {
         if self.crop_mode == on {
             return;
         }
+        if on {
+            self.set_spot_mode(false);
+            self.set_mask_mode(false);
+        }
         self.crop_mode = on;
         if self.edit_state.crop.is_some() {
             self.needs_process = true;
@@ -1040,22 +1044,18 @@ impl Viewer {
                         );
                 }
                 if ui.selectable_label(self.crop_mode, "Crop").clicked() {
-                    self.set_spot_mode(false);
-                    self.set_mask_mode(false);
-                    self.set_crop_mode(!self.crop_mode);
                     if self.crop_mode {
+                        // Exiting crop mode discards unapplied selection
+                        self.exit_crop_mode();
+                    } else {
                         // Enter crop mode: start with full image or existing applied crop
+                        self.set_crop_mode(true);
                         self.pending_crop = Some(self.edit_state.crop.clone().unwrap_or(Rect {
                             x: 0.0,
                             y: 0.0,
                             width: 1.0,
                             height: 1.0,
                         }));
-                    } else {
-                        // Exiting crop mode discards unapplied selection
-                        self.pending_crop = None;
-                        self.crop_drag = None;
-                        self.crop_create_origin = None;
                     }
                 }
                 if ui
@@ -3649,6 +3649,17 @@ mod tests {
         v.set_mask_mode(true);
         v.leave_tools();
         assert!(!v.mask_mode);
+    }
+
+    #[test]
+    fn crop_tool_is_exclusive_with_spot_and_mask() {
+        let mut v = super::Viewer::new(0, PreviewBackend::Auto);
+        v.set_spot_mode(true);
+        v.set_crop_mode(true);
+        assert!(v.crop_mode && !v.spot_mode);
+        v.set_mask_mode(true);
+        v.set_crop_mode(true);
+        assert!(v.crop_mode && !v.mask_mode);
     }
 
     #[test]
