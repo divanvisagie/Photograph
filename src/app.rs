@@ -13,7 +13,7 @@ use image::codecs::png::{
 };
 use image::codecs::webp::WebPEncoder;
 use image::imageops::FilterType;
-use patina::frame::{self, FrameStyle, TitleBar};
+use patina::frame::{self, TitleBar};
 use patina::skin::{self, Skin};
 use rayon::prelude::*;
 
@@ -39,10 +39,10 @@ enum Action {
     OpenSkinsFolder,
 }
 
-/// Photograph's own look, Yaru greys with Ubuntu orange following the
-/// desktop's light/dark setting, offered in the Skins menu beside Patina's
-/// skins and used until another is picked (ADR-0025).
-const HOME_SKIN: &str = "Photograph";
+/// The skin used until another is picked: Patina's Dark Orange, an improved
+/// version of Photograph's original look. Photograph is dark by default,
+/// whatever the desktop's setting (ADR-0028).
+const HOME_SKIN: &str = "Dark Orange";
 
 fn load_skins() -> (Vec<Skin>, Vec<String>) {
     skin::load_all(
@@ -189,129 +189,6 @@ pub struct PhotographApp {
     screenshot: Option<(PathBuf, bool)>,
 }
 
-/// Ubuntu/Yaru-flavoured surface colors, distinct per theme; the accent and
-/// semantic colors are shared between them.
-struct SurfacePalette {
-    window_bg: egui::Color32,
-    extreme_bg: egui::Color32,
-    faint_bg: egui::Color32,
-    button_normal: egui::Color32,
-    button_hover: egui::Color32,
-    button_active: egui::Color32,
-    button_disabled: egui::Color32,
-    primary_text: egui::Color32,
-    disabled_text: egui::Color32,
-    border: egui::Color32,
-}
-
-fn surface_palette(theme: egui::Theme) -> SurfacePalette {
-    match theme {
-        egui::Theme::Dark => SurfacePalette {
-            window_bg: egui::Color32::from_rgb(0x30, 0x30, 0x30),
-            extreme_bg: egui::Color32::from_rgb(0x24, 0x24, 0x24),
-            faint_bg: egui::Color32::from_rgb(0x3A, 0x3A, 0x3A),
-            button_normal: egui::Color32::from_rgb(0x3D, 0x3D, 0x3D),
-            button_hover: egui::Color32::from_rgb(0x47, 0x47, 0x47),
-            button_active: egui::Color32::from_rgb(0x2A, 0x2A, 0x2A),
-            button_disabled: egui::Color32::from_rgb(0x30, 0x30, 0x30),
-            primary_text: egui::Color32::from_rgb(0xEE, 0xEE, 0xEE),
-            disabled_text: egui::Color32::from_rgb(0x94, 0x94, 0x94),
-            border: egui::Color32::from_rgb(0x47, 0x47, 0x47),
-        },
-        egui::Theme::Light => SurfacePalette {
-            window_bg: egui::Color32::from_rgb(0xF6, 0xF5, 0xF4),
-            extreme_bg: egui::Color32::from_rgb(0xFF, 0xFF, 0xFF),
-            faint_bg: egui::Color32::from_rgb(0xE8, 0xE7, 0xE6),
-            button_normal: egui::Color32::from_rgb(0xFF, 0xFF, 0xFF),
-            button_hover: egui::Color32::from_rgb(0xEC, 0xEC, 0xEA),
-            button_active: egui::Color32::from_rgb(0xDE, 0xDC, 0xDA),
-            button_disabled: egui::Color32::from_rgb(0xF0, 0xEF, 0xED),
-            primary_text: egui::Color32::from_rgb(0x26, 0x23, 0x2A),
-            disabled_text: egui::Color32::from_rgb(0x8B, 0x8A, 0x8D),
-            border: egui::Color32::from_rgb(0xD5, 0xD3, 0xD1),
-        },
-    }
-}
-
-/// Builds the `Visuals` for one theme in the Yaru (stock Ubuntu GTK theme) style.
-fn photograph_visuals(theme: egui::Theme) -> egui::Visuals {
-    let mut visuals = theme.default_visuals();
-    let p = surface_palette(theme);
-
-    // Ubuntu orange — shared accent across both themes.
-    let accent = egui::Color32::from_rgb(0xE9, 0x54, 0x20);
-    let focus_ring = egui::Color32::from_rgba_unmultiplied(0xE9, 0x54, 0x20, 0xB3);
-    let error = egui::Color32::from_rgb(0xC0, 0x1C, 0x28);
-    let warn = egui::Color32::from_rgb(0xE6, 0x6A, 0x00);
-
-    // GTK/Adwaita-style rounding: 6px on widgets, 8px on windows/menus.
-    let rounding = egui::CornerRadius::same(6);
-    visuals.window_corner_radius = egui::CornerRadius::same(8);
-    visuals.menu_corner_radius = egui::CornerRadius::same(8);
-
-    // Panel & window fills
-    visuals.window_fill = p.window_bg;
-    visuals.panel_fill = p.window_bg;
-    visuals.extreme_bg_color = p.extreme_bg;
-    visuals.faint_bg_color = p.faint_bg;
-
-    // Text
-    visuals.override_text_color = Some(p.primary_text);
-
-    // Selection
-    visuals.selection.bg_fill = accent;
-    visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
-
-    // Hyperlinks & semantic colors
-    visuals.hyperlink_color = accent;
-    visuals.error_fg_color = error;
-    visuals.warn_fg_color = warn;
-
-    // Window stroke — very subtle
-    visuals.window_stroke = egui::Stroke::new(1.0, p.border);
-
-    // Noninteractive (labels, separators, disabled)
-    visuals.widgets.noninteractive.bg_fill = p.button_disabled;
-    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, p.border);
-    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, p.disabled_text);
-    visuals.widgets.noninteractive.corner_radius = rounding;
-
-    // Widget styles — inactive (enabled but not hovered)
-    visuals.widgets.inactive.bg_fill = p.button_normal;
-    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, p.border);
-    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, p.primary_text);
-    visuals.widgets.inactive.corner_radius = rounding;
-
-    // Widget styles — hovered
-    visuals.widgets.hovered.bg_fill = p.button_hover;
-    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, p.border);
-    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.5, focus_ring);
-    visuals.widgets.hovered.corner_radius = rounding;
-
-    // Widget styles — active (pressed)
-    visuals.widgets.active.bg_fill = p.button_active;
-    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, accent);
-    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.5, p.primary_text);
-    visuals.widgets.active.corner_radius = rounding;
-
-    // Widget styles — open (e.g. combo box expanded)
-    visuals.widgets.open.bg_fill = p.button_hover;
-    visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, p.border);
-    visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, p.primary_text);
-    visuals.widgets.open.corner_radius = rounding;
-
-    visuals
-}
-
-/// Photograph's own look: dark and light `Visuals` and a theme preference
-/// that follows the OS light/dark setting (egui's default; on Linux the
-/// setting comes from Patina's `appearance`, see ADR-0021).
-fn photograph_look(ctx: &egui::Context) {
-    ctx.set_visuals_of(egui::Theme::Dark, photograph_visuals(egui::Theme::Dark));
-    ctx.set_visuals_of(egui::Theme::Light, photograph_visuals(egui::Theme::Light));
-    ctx.set_theme(egui::ThemePreference::System);
-}
-
 /// GTK-style spacing, in every skin. Applying a Patina skin replaces the
 /// whole style, so this runs after each one.
 fn configure_spacing(ctx: &egui::Context) {
@@ -412,29 +289,18 @@ impl PhotographApp {
             .unwrap_or(HOME_SKIN)
     }
 
-    /// The chosen Patina skin, or `None` for Photograph's own look. A user
-    /// skin named "Photograph" replaces the look, as a skin of a built-in's
-    /// name does.
-    fn patina_skin(&self) -> Option<&Skin> {
-        let name = self.skin_name();
-        self.skins.iter().find(|s| s.name == name)
+    /// The chosen skin; Dark Orange when the chosen one is gone (or is the
+    /// "Photograph" look earlier builds offered), and Default if even that is.
+    fn skin(&self) -> &Skin {
+        let find = |name: &str| self.skins.iter().find(|s| s.name == name);
+        find(self.skin_name())
+            .or_else(|| find(HOME_SKIN))
+            .unwrap_or(&self.skins[0])
     }
 
     fn apply_skin(&self, ctx: &egui::Context) {
-        match self.patina_skin() {
-            Some(skin) => skin.apply(ctx),
-            None => photograph_look(ctx),
-        }
+        self.skin().apply(ctx);
         configure_spacing(ctx);
-    }
-
-    /// The frame's colours in the active visuals, computed every frame since
-    /// Photograph's look and Default follow the desktop.
-    fn frame_style(&self, visuals: &egui::Visuals) -> FrameStyle {
-        match self.patina_skin() {
-            Some(skin) => skin.frame_style(visuals),
-            None => FrameStyle::from_visuals(visuals),
-        }
     }
 
     /// The header's menus: File, View and Skins.
@@ -460,11 +326,7 @@ impl PhotographApp {
             }
         });
         ui.menu_button("Skins", |ui| {
-            let current = self.skin_name().to_string();
-            let has_home = self.skins.iter().any(|s| s.name == HOME_SKIN);
-            if !has_home && ui.radio(current == HOME_SKIN, HOME_SKIN).clicked() {
-                actions.push(Action::SetSkin(HOME_SKIN.into()));
-            }
+            let current = self.skin().name.clone();
             for skin in &self.skins {
                 let resp = ui.radio(skin.name == current, &skin.name);
                 let resp = match &skin.path {
@@ -1015,14 +877,11 @@ mod tests {
     }
 
     #[test]
-    fn photographs_look_is_offered_beside_patinas_skins() {
+    fn the_home_skin_is_a_dark_patina_built_in() {
         let (skins, errors) = patina::skin::load_all(patina::skin::BUILT_IN, &[]);
         assert!(errors.is_empty(), "{errors:?}");
-        assert!(
-            !skins.iter().any(|s| s.name == super::HOME_SKIN),
-            "a Patina built-in would replace Photograph's look"
-        );
-        assert!(skins.iter().any(|s| s.name == "Dark Orange"));
+        let home = skins.iter().find(|s| s.name == super::HOME_SKIN).unwrap();
+        assert_eq!(home.base, Some(patina::skin::Base::Dark));
     }
 
     #[test]
@@ -1152,7 +1011,7 @@ impl eframe::App for PhotographApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         let custom_frame = !self.config.system_title_bar;
-        let style = self.frame_style(ui.visuals());
+        let style = self.skin().frame_style(ui.visuals());
         let radius = if custom_frame {
             frame::corner_radius(ctx, style.radius)
         } else {

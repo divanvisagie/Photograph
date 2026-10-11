@@ -30,7 +30,7 @@ Built and used on Ubuntu Linux; each release also ships a macOS build (see
 - Color/tone edits: exposure, white balance, HSL, selective color, graduated filter, highlight/shadow recovery
 - Export rendered images as `JPG`, `PNG`, or `WebP` with quality/compression and optional resize
 - Background rendering/export progress UI
-- Skins: Photograph's own look (following the desktop's light/dark setting) plus the skins of [Patina](https://github.com/Sector-F-Labs/patina), the shared frame and design language it's built on, and any skin in `~/.config/patina/skins/`
+- Skins from [Patina](https://github.com/Sector-F-Labs/patina), the shared frame and design language it's built on: dark Dark Orange by default, Default (following the desktop's light/dark setting), Calendar, Notebook, Steam Classic, and any skin in `~/.config/patina/skins/`
 
 ## Supported Formats
 
@@ -143,7 +143,7 @@ Example:
 ```toml
 browse_path = "/path/to/photos"
 preview_backend = "auto" # auto | gpu | gpu_pipeline | cpu (debug only)
-skin = "Dark Orange"     # unset: Photograph's own look (Skins menu)
+skin = "Default"         # unset: Dark Orange (Skins menu)
 system_title_bar = false # true: let the desktop draw the frame (View menu)
 ```
 

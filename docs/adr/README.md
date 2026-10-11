@@ -62,9 +62,10 @@ mechanics of adding one.
 | [0022](0022-draw-own-window-frame.md) | Draw Photograph's own window frame | Accepted |
 | [0023](0023-tools-show-all-geometry.md) | The spot and mask tools show all of the edit's geometry | Accepted |
 | [0024](0024-macos-again-released-by-ci.md) | Ship a macOS build again, with every release built on GitHub from one `make release` | Accepted |
-| [0025](0025-build-on-patina.md) | Build on Patina: its frame, appearance watcher and skins | Accepted (Photograph skin and menus Proposed) |
+| [0025](0025-build-on-patina.md) | Build on Patina: its frame, appearance watcher and skins | Accepted (menus Proposed); its Photograph skin superseded by [ADR-0028](0028-dark-orange-by-default.md) |
 | [0026](0026-sidebar-folder-tree.md) | A folder tree in the sidebar, from Patina | Accepted (layout Proposed) |
 | [0027](0027-render-top-right-gpu-in-status-bar.md) | Render at the top right, GPU status in a status bar | Accepted |
+| [0028](0028-dark-orange-by-default.md) | Dark Orange by default, dark whatever the desktop's setting | Accepted |
 
 ## Decision Relationship
 
@@ -86,6 +87,7 @@ flowchart TD
     W --> PA
     PA --> TR[0026: Sidebar folder tree]
     PA --> SB[0027: Render top right, status bar]
+    PA --> DO[0028: Dark Orange by default]
 ```
 
 ## Revisit Triggers

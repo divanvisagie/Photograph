@@ -60,13 +60,13 @@ test: ## Run the tests
 # Throwaway config and data, so screenshots never touch your own settings.
 SCREENSHOT_ENV := XDG_CONFIG_HOME=$(CURDIR)/target/screenshot-config XDG_DATA_HOME=$(CURDIR)/target/screenshot-data
 
-screenshot: ## Save target/screenshot-*.png in Photograph's look and Dark Orange
+screenshot: ## Save target/screenshot-*.png in Dark Orange (the default), Default and Calendar
 	@rm -rf target/screenshot-config target/screenshot-data
 	@mkdir -p target/screenshot-config target/screenshot-data
 	@# Your XDG folder names, so Pictures is still a location.
 	-@cp $${XDG_CONFIG_HOME:-$$HOME/.config}/user-dirs.dirs target/screenshot-config/ 2>/dev/null
-	$(SCREENSHOT_ENV) PHOTOGRAPH_SCREENSHOT=target/screenshot-photograph.png cargo run --bin photograph
-	$(SCREENSHOT_ENV) PHOTOGRAPH_SCREENSHOT=target/screenshot-dark-orange.png PHOTOGRAPH_SKIN="Dark Orange" cargo run --bin photograph
+	$(SCREENSHOT_ENV) PHOTOGRAPH_SCREENSHOT=target/screenshot-dark-orange.png cargo run --bin photograph
+	$(SCREENSHOT_ENV) PHOTOGRAPH_SCREENSHOT=target/screenshot-default.png PHOTOGRAPH_SKIN=Default cargo run --bin photograph
 	$(SCREENSHOT_ENV) PHOTOGRAPH_SCREENSHOT=target/screenshot-calendar.png PHOTOGRAPH_SKIN=Calendar cargo run --bin photograph
 
 build: build-$(PLATFORM) ## Build the .deb
