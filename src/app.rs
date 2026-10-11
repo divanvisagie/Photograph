@@ -495,8 +495,25 @@ impl PhotographApp {
                 }
             }
         });
-        if ui.button("Render").clicked() {
-            actions.push(Action::Render);
+    }
+
+    /// The GPU badge and preview-backend status, laid out right to left.
+    fn gpu_status(&self, ui: &mut egui::Ui) {
+        let response = ui.label(
+            egui::RichText::new(&self.preview_status_label)
+                .weak()
+                .small()
+                .monospace(),
+        );
+        if let Some(details) = &self.preview_status_details {
+            response.on_hover_text(details);
+        }
+        if let Some(vendor) = self.preview_status_vendor {
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter()
+                .circle_filled(rect.center(), 4.0, vendor.badge_fill());
+            response.on_hover_text(format!("{} GPU", vendor.badge_text()));
         }
     }
 
@@ -1144,12 +1161,6 @@ impl eframe::App for PhotographApp {
         let tools_shown = self.view_mode == ViewMode::Edit;
         let filmstrip_shown =
             self.view_mode != ViewMode::Library && self.browser.selection.len() > 1;
-        // Which panel holds the window's bottom-right corner.
-        let (tools_se, filmstrip_se, central_se) = match (tools_shown, filmstrip_shown) {
-            (true, _) => (radius, 0, 0),
-            (false, true) => (0, radius, 0),
-            (false, false) => (0, 0, radius),
-        };
 
         // Header bar: toolbar, title and window buttons
         let mut actions = Vec::new();
@@ -1157,6 +1168,7 @@ impl eframe::App for PhotographApp {
             .frame(frame::header_frame(ui.style(), &style, radius))
             .show(ui, |ui| {
                 let mut edit_clicked = false;
+                let mut render_clicked = false;
                 TitleBar::new("Photograph", &style)
                     .custom(custom_frame)
                     .menu_bar(true)
@@ -1164,31 +1176,18 @@ impl eframe::App for PhotographApp {
                         ui,
                         |ui| self.menus(ui, &mut actions),
                         |ui| {
+                            render_clicked = ui.button("Render").clicked();
                             // The photo views have their own Edit button (`show_photo_header`).
                             if self.browser.selected.is_some()
                                 && self.view_mode == ViewMode::Library
                             {
                                 edit_clicked = ui.button("Edit").clicked();
                             }
-                            if let Some(vendor) = self.preview_status_vendor {
-                                let (rect, response) = ui.allocate_exact_size(
-                                    egui::vec2(10.0, 10.0),
-                                    egui::Sense::hover(),
-                                );
-                                ui.painter()
-                                    .circle_filled(rect.center(), 5.0, vendor.badge_fill());
-                                response.on_hover_text(format!("{} GPU", vendor.badge_text()));
-                            }
-                            let response = ui.label(
-                                egui::RichText::new(&self.preview_status_label)
-                                    .weak()
-                                    .monospace(),
-                            );
-                            if let Some(details) = &self.preview_status_details {
-                                response.on_hover_text(details);
-                            }
                         },
                     );
+                if render_clicked {
+                    self.show_render_window = true;
+                }
                 if edit_clicked {
                     if let Some(path) = self.browser.selected.clone() {
                         self.viewer.set_image(path, ctx);
@@ -1199,6 +1198,27 @@ impl eframe::App for PhotographApp {
         for action in actions {
             self.act(ctx, action);
         }
+
+        // Status bar along the bottom, holding both of the window's bottom
+        // corners: the version on the left, the GPU on the right.
+        egui::Panel::bottom("status")
+            .frame(
+                egui::Frame::side_top_panel(ui.style())
+                    .inner_margin(egui::Margin::symmetric(10, 4))
+                    .corner_radius(egui::CornerRadius {
+                        sw: radius,
+                        se: radius,
+                        ..Default::default()
+                    }),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(version_label()).weak().small());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        self.gpu_status(ui);
+                    });
+                });
+            });
         // Left sidebar — locations + current folder's subfolders
         egui::Panel::left("sidebar")
             .resizable(true)
@@ -1206,22 +1226,10 @@ impl eframe::App for PhotographApp {
             .min_size(160.0)
             .frame(
                 egui::Frame::side_top_panel(ui.style())
-                    .inner_margin(egui::Margin::symmetric(10, 10))
-                    .corner_radius(egui::CornerRadius {
-                        sw: radius,
-                        ..Default::default()
-                    }),
+                    .inner_margin(egui::Margin::symmetric(10, 10)),
             )
             .show(ui, |ui| {
-                // Version pinned to the bottom; the folder list fills and
-                // scrolls in the space above it.
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    ui.label(egui::RichText::new(version_label()).weak().small());
-                    ui.separator();
-                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                        self.browser.show_sidebar(ui);
-                    });
-                });
+                self.browser.show_sidebar(ui);
             });
 
         // Tools panel only applies while actively editing a photo
@@ -1232,10 +1240,6 @@ impl eframe::App for PhotographApp {
                 .frame(
                     egui::Frame::side_top_panel(ui.style())
                         .inner_margin(egui::Margin::symmetric(10, 10))
-                        .corner_radius(egui::CornerRadius {
-                            se: tools_se,
-                            ..Default::default()
-                        }),
                 )
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
@@ -1255,10 +1259,6 @@ impl eframe::App for PhotographApp {
                 .frame(
                     egui::Frame::side_top_panel(ui.style())
                         .inner_margin(egui::Margin::symmetric(10, 8))
-                        .corner_radius(egui::CornerRadius {
-                            se: filmstrip_se,
-                            ..Default::default()
-                        }),
                 )
                 .show(ui, |ui| {
                     let active_path = self.viewer.path().map(|p| p.as_path());
@@ -1274,10 +1274,6 @@ impl eframe::App for PhotographApp {
             .frame(
                 egui::Frame::central_panel(ui.style())
                     .inner_margin(egui::Margin::same(12))
-                    .corner_radius(egui::CornerRadius {
-                        se: central_se,
-                        ..Default::default()
-                    }),
             )
             .show(ui, |ui| match self.view_mode {
                 ViewMode::Library => {
