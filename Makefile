@@ -43,7 +43,7 @@ NOTES_FLAG := $(if $(NOTES),--notes-file "$(NOTES)")
 
 .DEFAULT_GOAL := help
 
-.PHONY: help dev build build-linux build-deb build-unsupported install install-linux install-unsupported clean clean-deb clean-icons icons icon-runtime release release-check docs dmg build-macos install-macos
+.PHONY: help dev test screenshot build build-linux build-deb build-unsupported install install-linux install-unsupported clean clean-deb clean-icons icons icon-runtime release release-check docs dmg build-macos install-macos
 
 help: ## Show this help
 	@echo "Usage: make <target>"
@@ -53,6 +53,19 @@ help: ## Show this help
 dev: ## Run with live reload (requires cargo-watch)
 	@command -v cargo-watch >/dev/null 2>&1 || { echo "cargo-watch is required: cargo install cargo-watch"; exit 1; }
 	RUST_LOG=photograph=debug cargo watch -x "run --bin photograph"
+
+test: ## Run the tests
+	cargo test
+
+# Throwaway config and data, so screenshots never touch your own settings.
+SCREENSHOT_ENV := XDG_CONFIG_HOME=$(CURDIR)/target/screenshot-config XDG_DATA_HOME=$(CURDIR)/target/screenshot-data
+
+screenshot: ## Save target/screenshot-*.png in Photograph's look and Dark Orange
+	@rm -rf target/screenshot-config target/screenshot-data
+	@mkdir -p target/screenshot-config target/screenshot-data
+	$(SCREENSHOT_ENV) PHOTOGRAPH_SCREENSHOT=target/screenshot-photograph.png cargo run --bin photograph
+	$(SCREENSHOT_ENV) PHOTOGRAPH_SCREENSHOT=target/screenshot-dark-orange.png PHOTOGRAPH_SKIN="Dark Orange" cargo run --bin photograph
+	$(SCREENSHOT_ENV) PHOTOGRAPH_SCREENSHOT=target/screenshot-calendar.png PHOTOGRAPH_SKIN=Calendar cargo run --bin photograph
 
 build: build-$(PLATFORM) ## Build the .deb
 

@@ -1,12 +1,11 @@
 mod app;
-mod appearance;
 mod browser;
 mod config;
 mod editor;
-mod frame;
 mod locations;
 mod metadata;
 mod processing;
+mod screenshot;
 mod state;
 mod thumbnail;
 mod viewer;
@@ -135,15 +134,16 @@ fn main() -> eframe::Result {
     let height = config.window_height.unwrap_or(800.0);
 
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Photograph")
-            .with_app_id("photograph")
-            .with_icon(build_window_icon())
-            .with_inner_size([width, height])
-            // Photograph draws its own frame unless asked not to (see
-            // ADR-0022); transparency lets that frame have rounded corners.
-            .with_decorations(config.system_title_bar)
-            .with_transparent(true),
+        // Photograph draws its own frame unless asked not to (ADR-0022), with
+        // Patina's frame (ADR-0025).
+        viewport: patina::frame::viewport(
+            egui::ViewportBuilder::default()
+                .with_title("Photograph")
+                .with_app_id("photograph")
+                .with_icon(build_window_icon())
+                .with_inner_size([width, height]),
+            !config.system_title_bar,
+        ),
         ..Default::default()
     };
 

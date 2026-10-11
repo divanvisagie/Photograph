@@ -13,6 +13,9 @@ pub struct AppConfig {
     /// header bar (see ADR-0022).
     #[serde(default)]
     pub system_title_bar: bool,
+    /// The chosen skin's name; Photograph's own look when unset (ADR-0025).
+    #[serde(default)]
+    pub skin: Option<String>,
 }
 
 impl AppConfig {

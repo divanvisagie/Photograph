@@ -13,6 +13,8 @@ use image::codecs::png::{
 };
 use image::codecs::webp::WebPEncoder;
 use image::imageops::FilterType;
+use patina::frame::{self, FrameStyle, TitleBar};
+use patina::skin::{self, Skin};
 use rayon::prelude::*;
 
 use crate::{
@@ -25,6 +27,29 @@ use crate::{
 const SIDEBAR_WIDTH: f32 = 220.0;
 const TOOLS_WIDTH: f32 = 340.0;
 const FILMSTRIP_HEIGHT: f32 = 100.0;
+
+/// Things the header's menus ask for, handled after the header is drawn.
+enum Action {
+    Render,
+    Quit,
+    SystemTitleBar(bool),
+    SetSkin(String),
+    ReloadSkins,
+    CopySkins,
+    OpenSkinsFolder,
+}
+
+/// Photograph's own look, Yaru greys with Ubuntu orange following the
+/// desktop's light/dark setting, offered in the Skins menu beside Patina's
+/// skins and used until another is picked (ADR-0025).
+const HOME_SKIN: &str = "Photograph";
+
+fn load_skins() -> (Vec<Skin>, Vec<String>) {
+    skin::load_all(
+        skin::BUILT_IN,
+        &skin::shared_dir().into_iter().collect::<Vec<_>>(),
+    )
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ViewMode {
@@ -152,6 +177,16 @@ pub struct PhotographApp {
     /// The theme the window frame was last told about; `None` until the
     /// first frame.
     frame_theme: Option<egui::Theme>,
+    skins: Vec<Skin>,
+    /// Problems loading skins, shown in the Skins menu.
+    skin_errors: Vec<String>,
+    /// The outcome of the Skins menu's last folder action.
+    skin_notice: Option<String>,
+    /// A skin for this run only, not saved (`PHOTOGRAPH_SKIN`, for screenshots).
+    forced_skin: Option<String>,
+    /// `PHOTOGRAPH_SCREENSHOT`: where to save a screenshot, and whether it
+    /// was requested yet.
+    screenshot: Option<(PathBuf, bool)>,
 }
 
 /// Ubuntu/Yaru-flavoured surface colors, distinct per theme; the accent and
@@ -268,14 +303,18 @@ fn photograph_visuals(theme: egui::Theme) -> egui::Visuals {
     visuals
 }
 
-/// Wires up dark and light `Visuals`, GTK-style spacing, and a theme
-/// preference that follows the OS light/dark setting (egui's default; on
-/// Linux the setting comes from `appearance`, see ADR-0021).
-fn configure_visuals(ctx: &egui::Context) {
+/// Photograph's own look: dark and light `Visuals` and a theme preference
+/// that follows the OS light/dark setting (egui's default; on Linux the
+/// setting comes from Patina's `appearance`, see ADR-0021).
+fn photograph_look(ctx: &egui::Context) {
     ctx.set_visuals_of(egui::Theme::Dark, photograph_visuals(egui::Theme::Dark));
     ctx.set_visuals_of(egui::Theme::Light, photograph_visuals(egui::Theme::Light));
     ctx.set_theme(egui::ThemePreference::System);
+}
 
+/// GTK-style spacing, in every skin. Applying a Patina skin replaces the
+/// whole style, so this runs after each one.
+fn configure_spacing(ctx: &egui::Context) {
     ctx.all_styles_mut(|style| {
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.button_padding = egui::vec2(10.0, 5.0);
@@ -324,13 +363,13 @@ impl PhotographApp {
         preview_backend: PreviewBackend,
     ) -> Self {
         configure_fonts(&cc.egui_ctx);
-        configure_visuals(&cc.egui_ctx);
-        crate::appearance::watch(&cc.egui_ctx);
+        patina::appearance::watch(&cc.egui_ctx);
+        let (skins, skin_errors) = load_skins();
         let browser = Browser::new(config.browse_path.clone());
         let output_dir = default_render_dir();
         let (preview_status_label, preview_status_details, preview_status_vendor) =
             preview_status_summary(preview_backend);
-        Self {
+        let app = Self {
             browser,
             preview_status_label,
             preview_status_details,
@@ -355,6 +394,172 @@ impl PhotographApp {
             render_rx: None,
             config,
             frame_theme: None,
+            skins,
+            skin_errors,
+            skin_notice: None,
+            forced_skin: std::env::var("PHOTOGRAPH_SKIN").ok(),
+            screenshot: std::env::var_os("PHOTOGRAPH_SCREENSHOT")
+                .map(|p| (PathBuf::from(p), false)),
+        };
+        app.apply_skin(&cc.egui_ctx);
+        app
+    }
+
+    fn skin_name(&self) -> &str {
+        self.forced_skin
+            .as_deref()
+            .or(self.config.skin.as_deref())
+            .unwrap_or(HOME_SKIN)
+    }
+
+    /// The chosen Patina skin, or `None` for Photograph's own look. A user
+    /// skin named "Photograph" replaces the look, as a skin of a built-in's
+    /// name does.
+    fn patina_skin(&self) -> Option<&Skin> {
+        let name = self.skin_name();
+        self.skins.iter().find(|s| s.name == name)
+    }
+
+    fn apply_skin(&self, ctx: &egui::Context) {
+        match self.patina_skin() {
+            Some(skin) => skin.apply(ctx),
+            None => photograph_look(ctx),
+        }
+        configure_spacing(ctx);
+    }
+
+    /// The frame's colours in the active visuals, computed every frame since
+    /// Photograph's look and Default follow the desktop.
+    fn frame_style(&self, visuals: &egui::Visuals) -> FrameStyle {
+        match self.patina_skin() {
+            Some(skin) => skin.frame_style(visuals),
+            None => FrameStyle::from_visuals(visuals),
+        }
+    }
+
+    /// The header's menus: File, View and Skins.
+    fn menus(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        ui.menu_button("File", |ui| {
+            if ui.button("Render…").clicked() {
+                actions.push(Action::Render);
+                ui.close();
+            }
+            ui.separator();
+            if ui
+                .add(egui::Button::new("Quit").shortcut_text("Ctrl+Q"))
+                .clicked()
+            {
+                actions.push(Action::Quit);
+                ui.close();
+            }
+        });
+        ui.menu_button("View", |ui| {
+            let mut system = self.config.system_title_bar;
+            if ui.checkbox(&mut system, "System Title Bar").changed() {
+                actions.push(Action::SystemTitleBar(system));
+            }
+        });
+        ui.menu_button("Skins", |ui| {
+            let current = self.skin_name().to_string();
+            let has_home = self.skins.iter().any(|s| s.name == HOME_SKIN);
+            if !has_home && ui.radio(current == HOME_SKIN, HOME_SKIN).clicked() {
+                actions.push(Action::SetSkin(HOME_SKIN.into()));
+            }
+            for skin in &self.skins {
+                let resp = ui.radio(skin.name == current, &skin.name);
+                let resp = match &skin.path {
+                    Some(path) => resp.on_hover_text(path.display().to_string()),
+                    None => resp,
+                };
+                if resp.clicked() {
+                    actions.push(Action::SetSkin(skin.name.clone()));
+                }
+            }
+            ui.separator();
+            if ui.button("Reload skins").clicked() {
+                actions.push(Action::ReloadSkins);
+            }
+            if ui.button("Copy built-in skins to folder").clicked() {
+                actions.push(Action::CopySkins);
+            }
+            if ui.button("Open skins folder").clicked() {
+                actions.push(Action::OpenSkinsFolder);
+            }
+            if let Some(notice) = &self.skin_notice {
+                ui.label(egui::RichText::new(notice).weak());
+            }
+            if !self.skin_errors.is_empty() {
+                ui.separator();
+                for error in &self.skin_errors {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+            }
+        });
+        if ui.button("Render").clicked() {
+            actions.push(Action::Render);
+        }
+    }
+
+    fn act(&mut self, ctx: &egui::Context, action: Action) {
+        match action {
+            Action::Render => self.show_render_window = true,
+            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Action::SystemTitleBar(on) => {
+                self.config.system_title_bar = on;
+                self.config.save();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(on));
+            }
+            Action::SetSkin(name) => {
+                self.forced_skin = None;
+                self.config.skin = Some(name);
+                self.config.save();
+                self.apply_skin(ctx);
+            }
+            Action::ReloadSkins => {
+                (self.skins, self.skin_errors) = load_skins();
+                self.apply_skin(ctx);
+            }
+            Action::CopySkins => {
+                let result = skin::shared_dir()
+                    .ok_or_else(|| "no config folder".to_string())
+                    .and_then(|dir| skin::export_built_ins(&dir, skin::BUILT_IN));
+                self.skin_notice = Some(match result {
+                    Ok(export) if export.copied.is_empty() => {
+                        "The built-in skins are already there".into()
+                    }
+                    Ok(export) => format!("Copied {}", export.copied.join(", ")),
+                    Err(e) => format!("Could not copy skins: {e}"),
+                });
+            }
+            Action::OpenSkinsFolder => {
+                if let Some(dir) = skin::shared_dir() {
+                    let _ = std::fs::create_dir_all(&dir);
+                    ctx.open_url(egui::OpenUrl::new_tab(format!("file://{}", dir.display())));
+                }
+            }
+        }
+    }
+
+    fn take_screenshot(&mut self, ctx: &egui::Context) {
+        let Some((path, requested)) = &mut self.screenshot else {
+            return;
+        };
+        ctx.request_repaint();
+        let image = ctx.input(|i| {
+            i.raw.events.iter().find_map(|e| match e {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        if let Some(image) = image {
+            match crate::screenshot::save(&image, path) {
+                Ok(()) => eprintln!("saved {}", path.display()),
+                Err(e) => eprintln!("screenshot failed: {e}"),
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if !*requested && ctx.input(|i| i.time) > 1.0 {
+            *requested = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
         }
     }
 
@@ -793,6 +998,17 @@ mod tests {
     }
 
     #[test]
+    fn photographs_look_is_offered_beside_patinas_skins() {
+        let (skins, errors) = patina::skin::load_all(patina::skin::BUILT_IN, &[]);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(
+            !skins.iter().any(|s| s.name == super::HOME_SKIN),
+            "a Patina built-in would replace Photograph's look"
+        );
+        assert!(skins.iter().any(|s| s.name == "Dark Orange"));
+    }
+
+    #[test]
     fn resized_dimensions_skips_when_already_within_limit() {
         assert_eq!(resized_dimensions(1600, 900, 2000), None);
     }
@@ -910,8 +1126,21 @@ impl eframe::App for PhotographApp {
         }
 
         self.follow_theme(ctx);
+        if ctx.input_mut(|i| {
+            i.consume_shortcut(&egui::KeyboardShortcut::new(
+                egui::Modifiers::COMMAND,
+                egui::Key::Q,
+            ))
+        }) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         let custom_frame = !self.config.system_title_bar;
-        let radius = if custom_frame { crate::frame::corner_radius(ctx, WINDOW_RADIUS) } else { 0 };
+        let style = self.frame_style(ui.visuals());
+        let radius = if custom_frame {
+            frame::corner_radius(ctx, style.radius)
+        } else {
+            0
+        };
         let tools_shown = self.view_mode == ViewMode::Edit;
         let filmstrip_shown =
             self.view_mode != ViewMode::Library && self.browser.selection.len() > 1;
@@ -923,45 +1152,43 @@ impl eframe::App for PhotographApp {
         };
 
         // Header bar: toolbar, title and window buttons
+        let mut actions = Vec::new();
         egui::Panel::top("main_menu")
-            .frame(
-                egui::Frame::side_top_panel(ui.style())
-                    .inner_margin(egui::Margin::symmetric(12, 8))
-                    .corner_radius(egui::CornerRadius { nw: radius, ne: radius, sw: 0, se: 0 }),
-            )
+            .frame(frame::header_frame(ui.style(), &style, radius))
             .show(ui, |ui| {
                 let mut edit_clicked = false;
-                crate::frame::title_bar(
-                    ui,
-                    "Photograph",
-                    custom_frame,
-                    |ui| {
-                        if ui.button("Render").clicked() {
-                            self.show_render_window = true;
-                        }
-                    },
-                    |ui| {
-                        // The photo views have their own Edit button (`show_photo_header`).
-                        if self.browser.selected.is_some() && self.view_mode == ViewMode::Library {
-                            edit_clicked = ui.button("Edit").clicked();
-                        }
-                        if let Some(vendor) = self.preview_status_vendor {
-                            let (rect, response) = ui
-                                .allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                            ui.painter()
-                                .circle_filled(rect.center(), 5.0, vendor.badge_fill());
-                            response.on_hover_text(format!("{} GPU", vendor.badge_text()));
-                        }
-                        let response = ui.label(
-                            egui::RichText::new(&self.preview_status_label)
-                                .weak()
-                                .monospace(),
-                        );
-                        if let Some(details) = &self.preview_status_details {
-                            response.on_hover_text(details);
-                        }
-                    },
-                );
+                TitleBar::new("Photograph", &style)
+                    .custom(custom_frame)
+                    .menu_bar(true)
+                    .show(
+                        ui,
+                        |ui| self.menus(ui, &mut actions),
+                        |ui| {
+                            // The photo views have their own Edit button (`show_photo_header`).
+                            if self.browser.selected.is_some()
+                                && self.view_mode == ViewMode::Library
+                            {
+                                edit_clicked = ui.button("Edit").clicked();
+                            }
+                            if let Some(vendor) = self.preview_status_vendor {
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(10.0, 10.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter()
+                                    .circle_filled(rect.center(), 5.0, vendor.badge_fill());
+                                response.on_hover_text(format!("{} GPU", vendor.badge_text()));
+                            }
+                            let response = ui.label(
+                                egui::RichText::new(&self.preview_status_label)
+                                    .weak()
+                                    .monospace(),
+                            );
+                            if let Some(details) = &self.preview_status_details {
+                                response.on_hover_text(details);
+                            }
+                        },
+                    );
                 if edit_clicked {
                     if let Some(path) = self.browser.selected.clone() {
                         self.viewer.set_image(path, ctx);
@@ -969,6 +1196,9 @@ impl eframe::App for PhotographApp {
                     self.view_mode = ViewMode::Edit;
                 }
             });
+        for action in actions {
+            self.act(ctx, action);
+        }
         // Left sidebar — locations + current folder's subfolders
         egui::Panel::left("sidebar")
             .resizable(true)
@@ -977,7 +1207,10 @@ impl eframe::App for PhotographApp {
             .frame(
                 egui::Frame::side_top_panel(ui.style())
                     .inner_margin(egui::Margin::symmetric(10, 10))
-                    .corner_radius(egui::CornerRadius { sw: radius, ..Default::default() }),
+                    .corner_radius(egui::CornerRadius {
+                        sw: radius,
+                        ..Default::default()
+                    }),
             )
             .show(ui, |ui| {
                 // Version pinned to the bottom; the folder list fills and
@@ -1003,7 +1236,10 @@ impl eframe::App for PhotographApp {
                 .frame(
                     egui::Frame::side_top_panel(ui.style())
                         .inner_margin(egui::Margin::symmetric(10, 10))
-                        .corner_radius(egui::CornerRadius { se: tools_se, ..Default::default() }),
+                        .corner_radius(egui::CornerRadius {
+                            se: tools_se,
+                            ..Default::default()
+                        }),
                 )
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
@@ -1023,7 +1259,10 @@ impl eframe::App for PhotographApp {
                 .frame(
                     egui::Frame::side_top_panel(ui.style())
                         .inner_margin(egui::Margin::symmetric(10, 8))
-                        .corner_radius(egui::CornerRadius { se: filmstrip_se, ..Default::default() }),
+                        .corner_radius(egui::CornerRadius {
+                            se: filmstrip_se,
+                            ..Default::default()
+                        }),
                 )
                 .show(ui, |ui| {
                     let active_path = self.viewer.path().map(|p| p.as_path());
@@ -1039,7 +1278,10 @@ impl eframe::App for PhotographApp {
             .frame(
                 egui::Frame::central_panel(ui.style())
                     .inner_margin(egui::Margin::same(12))
-                    .corner_radius(egui::CornerRadius { se: central_se, ..Default::default() }),
+                    .corner_radius(egui::CornerRadius {
+                        se: central_se,
+                        ..Default::default()
+                    }),
             )
             .show(ui, |ui| match self.view_mode {
                 ViewMode::Library => {
@@ -1248,22 +1490,19 @@ impl eframe::App for PhotographApp {
         }
 
         if custom_frame {
-            crate::frame::edges(ctx, radius);
+            frame::edges(ctx, radius, style.border);
         }
+        self.take_screenshot(ctx);
     }
 
     /// Transparent behind Photograph's own frame, so its rounded corners
     /// show the desktop; the panels paint everything else.
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
-        if self.config.system_title_bar {
-            visuals.panel_fill.to_normalized_gamma_f32()
-        } else {
-            [0.0; 4]
-        }
+        frame::clear_color(visuals, !self.config.system_title_bar)
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        crate::frame::release_grab(ctx, raw_input);
+        frame::release_grab(ctx, raw_input);
     }
 
     fn on_exit(&mut self) {
@@ -1273,13 +1512,13 @@ impl eframe::App for PhotographApp {
     }
 }
 
-/// Corner rounding of the window's own frame: libadwaita's
-/// `--window-radius`, as shipped in Ubuntu's Yaru styles.
-const WINDOW_RADIUS: u8 = 15;
-
 /// "Photograph v0.4.1", from Cargo.toml at build time; debug builds say so.
 fn version_label() -> String {
-    let debug = if cfg!(debug_assertions) { " (debug)" } else { "" };
+    let debug = if cfg!(debug_assertions) {
+        " (debug)"
+    } else {
+        ""
+    };
     format!("Photograph v{}{debug}", env!("CARGO_PKG_VERSION"))
 }
 

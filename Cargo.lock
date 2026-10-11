@@ -988,6 +988,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dirs"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
 name = "dirs-sys"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3251,6 +3260,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
 
 [[package]]
+name = "patina-ui"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f901c33b0402b29d8b996f308b79e268b22017e6aa5f12185150ed14998b2fdd"
+dependencies = [
+ "dirs 7.0.0",
+ "egui",
+ "serde",
+ "serde_ignored",
+ "toml 1.1.4+spec-1.1.0",
+ "zbus",
+]
+
+[[package]]
 name = "peniko"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3318,12 +3341,13 @@ version = "0.4.5"
 dependencies = [
  "anyhow",
  "bytemuck",
- "dirs",
+ "dirs 6.0.0",
  "eframe",
  "egui",
  "image",
  "imageproc",
  "kamadak-exif",
+ "patina-ui",
  "pollster 1.0.1",
  "rawler",
  "rayon",
@@ -4045,6 +4069,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "serde_ignored"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115dffd5f3853e06e746965a20dcbae6ee747ae30b543d91b0e089668bb07798"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
