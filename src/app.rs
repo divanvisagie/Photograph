@@ -1219,11 +1219,7 @@ impl eframe::App for PhotographApp {
                     ui.label(egui::RichText::new(version_label()).weak().small());
                     ui.separator();
                     ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                        egui::ScrollArea::vertical()
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                self.browser.show_sidebar(ui);
-                            });
+                        self.browser.show_sidebar(ui);
                     });
                 });
             });

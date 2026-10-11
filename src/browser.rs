@@ -1,8 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc,
 };
+
+use patina::tree::FolderTree;
 
 use crate::locations::{self, Location};
 
@@ -45,6 +47,9 @@ pub struct Browser {
     storage_locations: Vec<Location>,
     network_locations: Vec<Location>,
     scan_error: Option<String>,
+    /// The sidebar's folder tree, rooted at the location that holds the
+    /// current folder (Patina's `FolderTree`, see ADR-0026).
+    tree: FolderTree,
 }
 
 impl Browser {
@@ -74,10 +79,41 @@ impl Browser {
             storage_locations: Vec::new(),
             network_locations: Vec::new(),
             scan_error: None,
+            tree: FolderTree::new(PathBuf::new(), String::new()),
         };
         b.scan_locations();
+        let (root, label) = b.location_for(&b.current_dir);
+        b.tree.set_root(root, label);
+        b.tree.reveal(&b.current_dir.clone());
         b.scan();
         b
+    }
+
+    /// The places the sidebar lists, as (path, label): Home, Pictures,
+    /// Computer, then storage and network mounts.
+    fn locations(&self) -> Vec<(PathBuf, String)> {
+        let mut out = Vec::new();
+        if let Some(home) = dirs::home_dir() {
+            out.push((home, "Home".to_string()));
+        }
+        if let Some(pictures) = dirs::picture_dir().filter(|p| p.is_dir()) {
+            out.push((pictures, "Pictures".to_string()));
+        }
+        out.push((PathBuf::from("/"), "Computer".to_string()));
+        for loc in self.storage_locations.iter().chain(&self.network_locations) {
+            out.push((loc.path.clone(), loc.label.clone()));
+        }
+        out
+    }
+
+    /// The most specific sidebar location containing `path`, for rooting
+    /// the tree when you navigate by path bar or start up.
+    fn location_for(&self, path: &Path) -> (PathBuf, String) {
+        self.locations()
+            .into_iter()
+            .filter(|(root, _)| path.starts_with(root))
+            .max_by_key(|(root, _)| root.components().count())
+            .unwrap_or_else(|| (PathBuf::from("/"), "Computer".to_string()))
     }
 
     fn scan(&mut self) {
@@ -218,6 +254,13 @@ impl Browser {
             self.select_anchor = None;
             self.selection.clear();
             self.scan_locations();
+            if !self.current_dir.starts_with(self.tree.root()) {
+                let (root, label) = self.location_for(&self.current_dir);
+                self.tree.set_root(root, label);
+            }
+            // Entering a folder re-lists it, so the tree picks up changes.
+            self.tree.refresh(&self.current_dir);
+            self.tree.reveal(&self.current_dir);
             self.scan();
             if let Some(file) = self.pending_select.take() {
                 if self.images.iter().any(|(p, _)| *p == file) {
@@ -227,28 +270,35 @@ impl Browser {
             }
         }
 
+        self.tree.poll();
         self.drain_channel(ctx);
         self.queue_pending_thumbs(ctx);
     }
 
-    /// Renders the left-hand navigation sidebar: locations, then the current
-    /// directory's subfolders, as vertical lists.
+    /// Renders the left-hand navigation sidebar: locations, the path bar,
+    /// then a folder tree under the chosen location.
     pub fn show_sidebar(&mut self, ui: &mut egui::Ui) {
         let mut nav_to: Option<PathBuf> = None;
+        // A clicked location becomes the tree's root, even if it's inside another.
+        let mut new_root: Option<(PathBuf, String)> = None;
 
         ui.label(egui::RichText::new("LOCATIONS").weak().small());
         let mut places: Vec<(PathBuf, &str, &str)> = Vec::new();
         if let Some(home) = dirs::home_dir() {
             places.push((home, "\u{1F3E0}", "Home"));
         }
+        if let Some(pictures) = dirs::picture_dir().filter(|p| p.is_dir()) {
+            places.push((pictures, "\u{1F5BC}", "Pictures"));
+        }
         places.push((PathBuf::from("/"), "\u{1F4BB}", "Computer"));
         for (path, icon, label) in places {
-            let is_current = path == self.current_dir;
+            let is_current = path == self.tree.root();
             if ui
                 .selectable_label(is_current, format!("{icon} {label}"))
                 .on_hover_text(path.display().to_string())
                 .clicked()
             {
+                new_root = Some((path.clone(), label.to_string()));
                 nav_to = Some(path);
             }
         }
@@ -263,12 +313,13 @@ impl Browser {
             }
             ui.label(egui::RichText::new(heading).weak().small());
             for loc in list {
-                let is_current = loc.path == self.current_dir;
+                let is_current = loc.path == self.tree.root();
                 if ui
                     .selectable_label(is_current, format!("{icon} {}", loc.label))
                     .on_hover_text(&loc.detail)
                     .clicked()
                 {
+                    new_root = Some((loc.path.clone(), loc.label.clone()));
                     nav_to = Some(loc.path.clone());
                 }
             }
@@ -323,20 +374,21 @@ impl Browser {
         ui.add_space(4.0);
         ui.separator();
 
-        if !self.subdirs.is_empty() {
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new("FOLDERS").weak().small());
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    for (path, name) in &self.subdirs {
-                        if ui.button(format!("\u{1F4C1} {}", name)).clicked() {
-                            nav_to = Some(path.clone());
-                        }
-                    }
-                });
-        }
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new("FOLDERS").weak().small());
+        // The tree scrolls on its own, so revealing a deep folder keeps the
+        // locations and path bar in view.
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                if let Some(path) = self.tree.show(ui, &self.current_dir) {
+                    nav_to = Some(path);
+                }
+            });
 
+        if let Some((root, label)) = new_root {
+            self.tree.set_root(root, label);
+        }
         if let Some(nav) = nav_to {
             self.navigate(nav);
         }

@@ -63,6 +63,7 @@ mechanics of adding one.
 | [0023](0023-tools-show-all-geometry.md) | The spot and mask tools show all of the edit's geometry | Accepted |
 | [0024](0024-macos-again-released-by-ci.md) | Ship a macOS build again, with every release built on GitHub from one `make release` | Accepted |
 | [0025](0025-build-on-patina.md) | Build on Patina: its frame, appearance watcher and skins | Accepted (Photograph skin and menus Proposed) |
+| [0026](0026-sidebar-folder-tree.md) | A folder tree in the sidebar, from Patina | Accepted (layout Proposed) |
 
 ## Decision Relationship
 
@@ -82,6 +83,7 @@ flowchart TD
     T[0021: Follow desktop light/dark] --> W[0022: Own window frame]
     T --> PA[0025: Built on Patina]
     W --> PA
+    PA --> TR[0026: Sidebar folder tree]
 ```
 
 ## Revisit Triggers
