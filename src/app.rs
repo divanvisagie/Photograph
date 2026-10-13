@@ -47,7 +47,7 @@ const HOME_SKIN: &str = "Dark Orange";
 fn load_skins() -> (Vec<Skin>, Vec<String>) {
     skin::load_all(
         skin::BUILT_IN,
-        &skin::shared_dir().into_iter().collect::<Vec<_>>(),
+        &skin::app_dir("photograph").into_iter().collect::<Vec<_>>(),
     )
 }
 
@@ -399,7 +399,7 @@ impl PhotographApp {
                 self.apply_skin(ctx);
             }
             Action::CopySkins => {
-                let result = skin::shared_dir()
+                let result = skin::app_dir("photograph")
                     .ok_or_else(|| "no config folder".to_string())
                     .and_then(|dir| skin::export_built_ins(&dir, skin::BUILT_IN));
                 self.skin_notice = Some(match result {
@@ -411,7 +411,7 @@ impl PhotographApp {
                 });
             }
             Action::OpenSkinsFolder => {
-                if let Some(dir) = skin::shared_dir() {
+                if let Some(dir) = skin::app_dir("photograph") {
                     let _ = std::fs::create_dir_all(&dir);
                     let _ = patina::open::path(&dir);
                 }

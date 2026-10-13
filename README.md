@@ -30,7 +30,7 @@ Built and used on Ubuntu Linux; each release also ships a macOS build (see
 - Color/tone edits: exposure, white balance, HSL, selective color, graduated filter, highlight/shadow recovery
 - Export rendered images as `JPG`, `PNG`, or `WebP` with quality/compression and optional resize
 - Background rendering/export progress UI
-- Skins from [Patina](https://github.com/Sector-F-Labs/patina), the shared frame and design language it's built on: dark Dark Orange by default, Default (following the desktop's light/dark setting), Calendar, Notebook, Steam Classic, and any skin in `~/.config/patina/skins/`
+- Skins from [Patina](https://github.com/Sector-F-Labs/patina), the shared frame and design language it's built on: dark Dark Orange by default, Default (following the desktop's light/dark setting), Calendar, Notebook, Steam Classic, and any skin in `~/.config/photograph/skins/`
 
 ## Supported Formats
 
