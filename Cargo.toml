@@ -18,7 +18,7 @@ default = []
 [dependencies]
 eframe = "0.35"
 egui = "0.35"
-patina-ui = "0.1.2"
+patina-ui = "0.1.6"
 zbus = "5"
 exif = { version = "0.6", package = "kamadak-exif" }
 serde = { version = "1", features = ["derive"] }
