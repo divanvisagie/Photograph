@@ -16,12 +16,24 @@ pub struct AppConfig {
     /// The chosen skin's name; Photograph's own look when unset (ADR-0025).
     #[serde(default)]
     pub skin: Option<String>,
+    /// "light" or "dark" while the skin follows the desktop; anything else
+    /// follows it.
+    #[serde(default)]
+    pub light_dark: String,
 }
 
 impl AppConfig {
     /// Returns the user config file path, if a config directory is available.
     pub fn config_path() -> Option<PathBuf> {
         dirs::config_dir().map(|d| d.join("photograph").join("config.toml"))
+    }
+
+    pub fn theme(&self) -> egui::ThemePreference {
+        match self.light_dark.as_str() {
+            "light" => egui::ThemePreference::Light,
+            "dark" => egui::ThemePreference::Dark,
+            _ => egui::ThemePreference::System,
+        }
     }
 
     /// Loads config from disk, falling back to defaults on any error.

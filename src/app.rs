@@ -34,6 +34,7 @@ enum Action {
     Quit,
     SystemTitleBar(bool),
     SetSkin(String),
+    SetLightDark(String),
     ReloadSkins,
     CopySkins,
     OpenSkinsFolder,
@@ -178,10 +179,10 @@ pub struct PhotographApp {
     /// first frame.
     frame_theme: Option<egui::Theme>,
     skins: Vec<Skin>,
-    /// Problems loading skins, shown in the Skins menu.
+    /// Problems loading skins, shown in the status bar until they load.
     skin_errors: Vec<String>,
-    /// The outcome of the Skins menu's last folder action.
-    skin_notice: Option<String>,
+    /// The latest message for the status bar.
+    status: Option<Status>,
     /// A skin for this run only, not saved (`PHOTOGRAPH_SKIN`, for screenshots).
     forced_skin: Option<String>,
     /// `PHOTOGRAPH_SCREENSHOT`: where to save a screenshot, and whether it
@@ -273,7 +274,7 @@ impl PhotographApp {
             frame_theme: None,
             skins,
             skin_errors,
-            skin_notice: None,
+            status: None,
             forced_skin: std::env::var("PHOTOGRAPH_SKIN").ok(),
             screenshot: std::env::var_os("PHOTOGRAPH_SCREENSHOT")
                 .map(|p| (PathBuf::from(p), false)),
@@ -299,7 +300,11 @@ impl PhotographApp {
     }
 
     fn apply_skin(&self, ctx: &egui::Context) {
-        self.skin().apply(ctx);
+        let skin = self.skin();
+        skin.apply(ctx);
+        if skin.follows_desktop() {
+            ctx.set_theme(self.config.theme());
+        }
         configure_spacing(ctx);
     }
 
@@ -325,10 +330,21 @@ impl PhotographApp {
                 actions.push(Action::SystemTitleBar(system));
             }
         });
+        // Patina's skin menu (its ADR-0017): only controls; what they did
+        // goes to the status bar.
         ui.menu_button("Skins", |ui| {
-            let current = self.skin().name.clone();
+            // Size the menu to its widest entry instead of wrapping entries
+            // to its first width.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            let current = self.skin();
             for skin in &self.skins {
-                let resp = ui.radio(skin.name == current, &skin.name);
+                let label = match &skin.author {
+                    Some(author) if skin.path.is_some() => {
+                        format!("{} — {author}", skin.name)
+                    }
+                    _ => skin.name.clone(),
+                };
+                let resp = ui.radio(skin.name == current.name, label);
                 let resp = match &skin.path {
                     Some(path) => resp.on_hover_text(path.display().to_string()),
                     None => resp,
@@ -338,25 +354,69 @@ impl PhotographApp {
                 }
             }
             ui.separator();
+            ui.add_enabled_ui(current.follows_desktop(), |ui| {
+                for (value, label) in [
+                    ("system", "Follow desktop"),
+                    ("light", "Light"),
+                    ("dark", "Dark"),
+                ] {
+                    // An unset or unknown setting follows the desktop.
+                    let on = match value {
+                        "system" => {
+                            !matches!(self.config.light_dark.as_str(), "light" | "dark")
+                        }
+                        _ => self.config.light_dark == value,
+                    };
+                    if ui.radio(on, label).clicked() {
+                        actions.push(Action::SetLightDark(value.into()));
+                    }
+                }
+            });
+            ui.separator();
             if ui.button("Reload skins").clicked() {
                 actions.push(Action::ReloadSkins);
             }
-            if ui.button("Copy built-in skins to folder").clicked() {
+            if ui
+                .button("Copy built-in skins to folder")
+                .on_hover_text(
+                    "Puts editable copies in the skins folder; never overwrites existing files",
+                )
+                .clicked()
+            {
                 actions.push(Action::CopySkins);
             }
-            if ui.button("Open skins folder").clicked() {
+            let folder = skin::app_dir("photograph")
+                .map(|d| d.display().to_string())
+                .unwrap_or_default();
+            if ui.button("Open skins folder").on_hover_text(folder).clicked() {
                 actions.push(Action::OpenSkinsFolder);
             }
-            if let Some(notice) = &self.skin_notice {
-                ui.label(egui::RichText::new(notice).weak());
-            }
-            if !self.skin_errors.is_empty() {
-                ui.separator();
-                for error in &self.skin_errors {
-                    ui.colored_label(ui.visuals().error_fg_color, error);
-                }
-            }
         });
+    }
+
+    /// The latest message, coloured by its level. Skins that failed to load
+    /// stay there, ahead of newer messages, until they load.
+    fn status_message(&self, ui: &mut egui::Ui) {
+        let skin_errors = (!self.skin_errors.is_empty()).then(|| {
+            let n = self.skin_errors.len();
+            Status::error(format!(
+                "Couldn't load {n} skin{}",
+                if n == 1 { "" } else { "s" }
+            ))
+        });
+        let Some(status) = skin_errors.as_ref().or(self.status.as_ref()) else {
+            return;
+        };
+        ui.separator();
+        let color = match status.level {
+            Level::Error => ui.visuals().error_fg_color,
+            Level::Warn => ui.visuals().warn_fg_color,
+            Level::Info => ui.visuals().weak_text_color(),
+        };
+        let resp = ui.label(egui::RichText::new(&status.text).color(color).small());
+        if skin_errors.is_some() {
+            resp.on_hover_text(self.skin_errors.join("\n"));
+        }
     }
 
     /// The GPU badge and preview-backend status, laid out right to left.
@@ -394,6 +454,11 @@ impl PhotographApp {
                 self.config.save();
                 self.apply_skin(ctx);
             }
+            Action::SetLightDark(value) => {
+                self.config.light_dark = value;
+                self.config.save();
+                self.apply_skin(ctx);
+            }
             Action::ReloadSkins => {
                 (self.skins, self.skin_errors) = load_skins();
                 self.apply_skin(ctx);
@@ -402,12 +467,19 @@ impl PhotographApp {
                 let result = skin::app_dir("photograph")
                     .ok_or_else(|| "no config folder".to_string())
                     .and_then(|dir| skin::export_built_ins(&dir, skin::BUILT_IN));
-                self.skin_notice = Some(match result {
-                    Ok(export) if export.copied.is_empty() => {
-                        "The built-in skins are already there".into()
+                self.status = Some(match result {
+                    Ok(export) => {
+                        // The copies share the built-ins' names, so after a
+                        // reload they're the versions in use.
+                        (self.skins, self.skin_errors) = load_skins();
+                        self.apply_skin(ctx);
+                        Status::info(if export.copied.is_empty() {
+                            "The built-in skins are already in the skins folder".into()
+                        } else {
+                            format!("Copied {} to the skins folder", export.copied.join(", "))
+                        })
                     }
-                    Ok(export) => format!("Copied {}", export.copied.join(", ")),
-                    Err(e) => format!("Could not copy skins: {e}"),
+                    Err(e) => Status::error(format!("Could not copy skins: {e}")),
                 });
             }
             Action::OpenSkinsFolder => {
@@ -1059,7 +1131,8 @@ impl eframe::App for PhotographApp {
         }
 
         // Status bar along the bottom, holding both of the window's bottom
-        // corners: the version on the left, the GPU on the right.
+        // corners: the version and the latest message on the left, the GPU
+        // on the right (Patina's ADR-0016).
         egui::Panel::bottom("status")
             .frame(
                 egui::Frame::side_top_panel(ui.style())
@@ -1073,6 +1146,7 @@ impl eframe::App for PhotographApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(version_label()).weak().small());
+                    self.status_message(ui);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         self.gpu_status(ui);
                     });
@@ -1363,14 +1437,45 @@ impl eframe::App for PhotographApp {
     }
 }
 
-/// "Photograph v0.4.1", from Cargo.toml at build time; debug builds say so.
+/// A message for the status bar.
+struct Status {
+    level: Level,
+    text: String,
+}
+
+#[allow(dead_code)] // Nothing warns yet.
+enum Level {
+    Error,
+    Warn,
+    Info,
+}
+
+impl Status {
+    fn error(text: impl Into<String>) -> Self {
+        Status {
+            level: Level::Error,
+            text: text.into(),
+        }
+    }
+
+    fn info(text: impl Into<String>) -> Self {
+        Status {
+            level: Level::Info,
+            text: text.into(),
+        }
+    }
+}
+
+/// "v0.4.1", from Cargo.toml at build time; debug builds say so. Just the
+/// version: the app's name is already in the title bar and the window list,
+/// so repeating it here adds nothing.
 fn version_label() -> String {
     let debug = if cfg!(debug_assertions) {
         " (debug)"
     } else {
         ""
     };
-    format!("Photograph v{}{debug}", env!("CARGO_PKG_VERSION"))
+    format!("v{}{debug}", env!("CARGO_PKG_VERSION"))
 }
 
 fn preview_status_summary(backend: PreviewBackend) -> (String, Option<String>, Option<GpuVendor>) {
