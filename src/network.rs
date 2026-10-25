@@ -7,6 +7,9 @@
 //!
 //! Linux only: elsewhere `Network` finds nothing and mounts nothing.
 
+// Elsewhere nothing makes the events and answers.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 use std::path::PathBuf;
 
 /// What the sidebar's Network place shows: every server GVfs finds.
@@ -292,7 +295,7 @@ mod imp {
                 })
             })
             .collect();
-        found.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        found.sort_by_key(|m| m.name.to_lowercase());
         found.dedup_by(|a, b| a.uri == b.uri);
         found
     }
@@ -338,7 +341,7 @@ mod imp {
                 .next_files_future(64, glib::Priority::DEFAULT)
                 .await?;
             if infos.is_empty() {
-                places.sort_by(|a: &Place, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                places.sort_by_key(|p: &Place| p.name.to_lowercase());
                 return Ok(places);
             }
             for info in infos {
