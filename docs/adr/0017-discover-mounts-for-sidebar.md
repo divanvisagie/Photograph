@@ -6,7 +6,9 @@ Note: This ADR supersedes [ADR-0015](0015-drop-specialized-network-mounts.md).
 
 ## Status
 
-Accepted
+Accepted. Its GVfs discovery is superseded by
+[ADR-0029](0029-browse-and-mount-network-shares-through-gvfs.md), which finds GVfs shares through
+GIO and mounts them too.
 
 ## Context
 

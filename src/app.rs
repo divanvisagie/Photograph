@@ -243,7 +243,7 @@ impl PhotographApp {
         configure_fonts(&cc.egui_ctx);
         patina::appearance::watch(&cc.egui_ctx);
         let (skins, skin_errors) = load_skins();
-        let browser = Browser::new(config.browse_path.clone());
+        let browser = Browser::new(&cc.egui_ctx, config.browse_path.clone());
         let output_dir = default_render_dir();
         let (preview_status_label, preview_status_details, preview_status_vendor) =
             preview_status_summary(preview_backend);
@@ -1052,6 +1052,9 @@ impl eframe::App for PhotographApp {
 
         // Poll background work before rendering panels
         self.browser.poll(ctx);
+        if let Some(message) = self.browser.take_message() {
+            self.status = Some(Status::error(message));
+        }
         self.viewer.drain(ctx);
         for path in self.viewer.take_changed_sidecars() {
             self.browser.refresh_thumbnail(&path);
@@ -1103,6 +1106,7 @@ impl eframe::App for PhotographApp {
                 TitleBar::new("Photograph", &style)
                     .custom(custom_frame)
                     .menu_bar(true)
+                    .span(frame::header_span(ui))
                     .show(
                         ui,
                         |ui| self.menus(ui, &mut actions),
@@ -1417,6 +1421,7 @@ impl eframe::App for PhotographApp {
         if custom_frame {
             frame::edges(ctx, radius, style.border);
         }
+        self.browser.show_dialogs(ctx);
         self.take_screenshot(ctx);
     }
 
@@ -1428,6 +1433,8 @@ impl eframe::App for PhotographApp {
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         frame::release_grab(ctx, raw_input);
+        patina::kinetic::glide(ctx, raw_input);
+        patina::ime::drop_repeated_preedits(ctx, raw_input);
     }
 
     fn on_exit(&mut self) {

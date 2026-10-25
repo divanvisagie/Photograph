@@ -54,7 +54,7 @@ mechanics of adding one.
 | [0014](0014-unify-grid-selection-model.md) | Unify grid selection to drive fullscreen view, filmstrip, and Render targeting | Accepted |
 | [0015](0015-drop-specialized-network-mounts.md) | Drop specialized network-mount logic in favor of local mounts | Superseded by [ADR-0017](0017-discover-mounts-for-sidebar.md) |
 | [0016](0016-drop-snap-packaging.md) | Drop Snap packaging; ship Linux .deb only | Accepted |
-| [0017](0017-discover-mounts-for-sidebar.md) | Discover storage and network mounts for the sidebar | Accepted |
+| [0017](0017-discover-mounts-for-sidebar.md) | Discover storage and network mounts for the sidebar | Accepted; GVfs discovery superseded by [ADR-0029](0029-browse-and-mount-network-shares-through-gvfs.md) |
 | [0018](0018-spot-removal-in-source-coordinates.md) | Spot removal (clone and heal) as the first pipeline stage, in source-image coordinates | Accepted |
 | [0019](0019-painted-adjustment-masks.md) | Painted adjustment masks stored as brush strokes | Accepted |
 | [0020](0020-portable-gpu-backend-selection.md) | Select each platform's primary GPU backend instead of Vulkan only | Accepted |
@@ -66,6 +66,7 @@ mechanics of adding one.
 | [0026](0026-sidebar-folder-tree.md) | A folder tree in the sidebar, from Patina | Accepted (layout Proposed) |
 | [0027](0027-render-top-right-gpu-in-status-bar.md) | Render at the top right, GPU status in a status bar | Accepted |
 | [0028](0028-dark-orange-by-default.md) | Dark Orange by default, dark whatever the desktop's setting | Accepted |
+| [0029](0029-browse-and-mount-network-shares-through-gvfs.md) | Browse and mount network shares through GVfs, as Files does | Accepted |
 
 ## Decision Relationship
 
@@ -88,6 +89,7 @@ flowchart TD
     PA --> TR[0026: Sidebar folder tree]
     PA --> SB[0027: Render top right, status bar]
     PA --> DO[0028: Dark Orange by default]
+    M17[0017: Discover mounts for the sidebar] --> N29[0029: Network shares through GVfs]
 ```
 
 ## Revisit Triggers

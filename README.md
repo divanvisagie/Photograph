@@ -22,7 +22,7 @@ Built and used on Ubuntu Linux; each release also ships a macOS build (see
 
 ## What It Does Today
 
-- Folder browser with thumbnail grid; sidebar lists mounted drives, ZFS pools, and network shares (NFS/SMB/sshfs/GVfs)
+- Folder browser with thumbnail grid; sidebar lists mounted drives, ZFS pools, and network shares (NFS/SMB/sshfs/GVfs), and browses and mounts SMB shares on the network through GVfs, asking for a password when a server wants one (`smb://` URIs work in the path bar)
 - Full image viewer/editor windows (egui/eframe)
 - EXIF metadata display
 - Non-destructive edits stored as sidecar JSON (`<image>.json`)
@@ -74,7 +74,7 @@ The sidebar's mounted drives and network shares are Linux-only.
 Or build and install the `.deb` locally via the `Makefile` (see [Packaging](#packaging)):
 
 ```bash
-sudo apt install -y dpkg-dev
+sudo apt install -y dpkg-dev libglib2.0-dev
 make install
 ```
 

@@ -18,7 +18,7 @@ default = []
 [dependencies]
 eframe = "0.35"
 egui = "0.35"
-patina-ui = "0.1.7"
+patina-ui = "0.1.12"
 zbus = "5"
 exif = { version = "0.6", package = "kamadak-exif" }
 serde = { version = "1", features = ["derive"] }
@@ -35,6 +35,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wgpu = "30"
 pollster = "1.0"
+
+# GVfs, for browsing and mounting network shares (ADR-0029).
+[target.'cfg(target_os = "linux")'.dependencies]
+gio = "0.22"
+async-channel = "2"
 
 [profile.release]
 opt-level = 3

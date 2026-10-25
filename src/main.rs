@@ -4,6 +4,7 @@ mod config;
 mod editor;
 mod locations;
 mod metadata;
+mod network;
 mod processing;
 mod screenshot;
 mod state;

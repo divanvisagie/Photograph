@@ -1,10 +1,9 @@
 //! Discovers sidebar locations: mounted storage (local disks, ZFS pools,
-//! removable drives) and network shares (classic NFS/CIFS/sshfs mounts plus
-//! GVfs connections opened from the desktop file manager).
+//! removable drives) and classic network mounts (NFS/CIFS/sshfs). GVfs
+//! shares come from GIO's volume monitor instead, in `network`.
 //!
 //! Nothing here stats the discovered paths — a hung network mount would
-//! otherwise block the UI thread. Everything comes from `/proc/self/mounts`
-//! and a single `read_dir` of the GVfs runtime directory.
+//! otherwise block the UI thread. Everything comes from `/proc/self/mounts`.
 
 use std::path::{Path, PathBuf};
 
@@ -56,32 +55,6 @@ pub fn mounted_locations(home: Option<&Path>) -> (Vec<Location>, Vec<Location>) 
         Ok(contents) => parse_mounts(&contents, home),
         Err(_) => (Vec::new(), Vec::new()),
     }
-}
-
-/// Active GVfs mounts — how GNOME Files surfaces `smb://`, `sftp://`, etc.
-/// connections — exposed through the `gvfsd-fuse` directory.
-pub fn gvfs_locations() -> Vec<Location> {
-    let Some(runtime_dir) = std::env::var_os("XDG_RUNTIME_DIR") else {
-        return Vec::new();
-    };
-    let gvfs_dir = PathBuf::from(runtime_dir).join("gvfs");
-    let Ok(entries) = std::fs::read_dir(&gvfs_dir) else {
-        return Vec::new();
-    };
-    let mut out: Vec<Location> = entries
-        .flatten()
-        .map(|entry| {
-            let raw = entry.file_name().to_string_lossy().into_owned();
-            let path = entry.path();
-            Location {
-                label: friendly_gvfs_label(&raw),
-                detail: path.display().to_string(),
-                path,
-            }
-        })
-        .collect();
-    out.sort_by(|a, b| a.label.cmp(&b.label));
-    out
 }
 
 fn parse_mounts(contents: &str, home: Option<&Path>) -> (Vec<Location>, Vec<Location>) {
@@ -173,33 +146,6 @@ pub fn expand_typed_path(input: &str, home: Option<&Path>) -> PathBuf {
     }
 }
 
-/// Turns a raw GVfs mount directory name (e.g.
-/// `smb-share:server=nas,share=photos`) into a readable label like
-/// `photos on nas`. Falls back to the raw name for unrecognized schemes.
-fn friendly_gvfs_label(raw: &str) -> String {
-    let Some((scheme, rest)) = raw.split_once(':') else {
-        return raw.to_string();
-    };
-
-    let mut server = None;
-    let mut share = None;
-    for kv in rest.split(',') {
-        if let Some((key, value)) = kv.split_once('=') {
-            match key {
-                "server" | "host" => server = server.or(Some(value)),
-                "share" => share = Some(value),
-                _ => {}
-            }
-        }
-    }
-
-    match (share, server) {
-        (Some(share), Some(server)) => format!("{share} on {server}"),
-        (None, Some(server)) => format!("{server} ({scheme})"),
-        _ => raw.to_string(),
-    }
-}
-
 /// Decodes the octal escapes (`\040` for space, etc.) `/proc/mounts` uses
 /// for whitespace and backslashes in mount-point paths.
 fn unescape_mount_field(field: &str) -> String {
@@ -273,34 +219,19 @@ nas:/photos /mnt/photos nfs4 rw 0 0
     #[test]
     fn expand_typed_path_handles_tilde_and_whitespace() {
         let home = Some(Path::new("/home/divan"));
-        assert_eq!(expand_typed_path("  ~ ", home), PathBuf::from("/home/divan"));
+        assert_eq!(
+            expand_typed_path("  ~ ", home),
+            PathBuf::from("/home/divan")
+        );
         assert_eq!(
             expand_typed_path("~/Pictures", home),
             PathBuf::from("/home/divan/Pictures")
         );
-        assert_eq!(expand_typed_path("/tank/photos", home), PathBuf::from("/tank/photos"));
+        assert_eq!(
+            expand_typed_path("/tank/photos", home),
+            PathBuf::from("/tank/photos")
+        );
         assert_eq!(expand_typed_path("~other", home), PathBuf::from("~other"));
-    }
-
-    #[test]
-    fn friendly_gvfs_label_formats_smb_share() {
-        assert_eq!(
-            friendly_gvfs_label("smb-share:server=nas,share=photos"),
-            "photos on nas"
-        );
-    }
-
-    #[test]
-    fn friendly_gvfs_label_formats_sftp_with_host_only() {
-        assert_eq!(
-            friendly_gvfs_label("sftp:host=example.com"),
-            "example.com (sftp)"
-        );
-    }
-
-    #[test]
-    fn friendly_gvfs_label_falls_back_for_unknown_scheme() {
-        assert_eq!(friendly_gvfs_label("unknown-thing"), "unknown-thing");
     }
 
     #[test]

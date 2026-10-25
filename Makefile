@@ -119,7 +119,8 @@ build-deb: ## Build the .deb into target/deb/
 		"Priority: optional" \
 		"Architecture: $(ARCH)" \
 		"Maintainer: Divan Visagie <me@divanv.com>" \
-		"Depends: libc6, libgcc-s1, libvulkan1" \
+		"Depends: libc6, libgcc-s1, libvulkan1, libglib2.0-0" \
+		"Recommends: gvfs-backends, gvfs-fuse" \
 		"Description: Photograph native photo editor" \
 		" Native Rust/egui photo editor with preview and export workflows." \
 		> "$(PKG_ROOT)/DEBIAN/control"
