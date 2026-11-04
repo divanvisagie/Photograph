@@ -3380,9 +3380,9 @@ checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
 
 [[package]]
 name = "patina-ui"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7761d9b39932777630910739ee75f28b4f9c4a98dc12bfa5a1b0f15bc138b3fc"
+checksum = "c9f4c98cd32ce66c0a611896751615c0ee74b2a156009af4c1932991578e5fb9"
 dependencies = [
  "dirs 7.0.0",
  "egui",
