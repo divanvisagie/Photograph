@@ -194,6 +194,10 @@ impl Browser {
     }
 
     fn scan_locations(&mut self) {
+        // Screenshots for the docs shouldn't show the user's drives and shares.
+        if crate::screenshot::requested().is_some() {
+            return;
+        }
         let home = dirs::home_dir();
         let (storage, network) = locations::mounted_locations(home.as_deref());
         self.storage_locations = storage;
@@ -259,6 +263,7 @@ impl Browser {
                     self.message = Some(format!("Couldn't unmount: {e}"));
                 }
             }
+            network::Event::Mounts(_) if crate::screenshot::requested().is_some() => {}
             network::Event::Mounts(mounts) => {
                 // Out of a share that's gone, to its server.
                 let gone = self
@@ -1049,7 +1054,7 @@ fn draw_thumb_cell(
             egui::Align2::CENTER_CENTER,
             "\u{2713}",
             egui::FontId::proportional(10.0),
-            egui::Color32::WHITE,
+            ui.visuals().selection.stroke.color,
         );
     }
 
@@ -1062,7 +1067,12 @@ fn draw_thumb_cell(
             egui::Align2::CENTER_CENTER,
             name_short,
             egui::FontId::proportional(11.0),
-            ui.visuals().text_color(),
+            if selected {
+                // Patina's text colour for sitting on the accent fill.
+                ui.visuals().selection.stroke.color
+            } else {
+                ui.visuals().text_color()
+            },
         );
     }
 

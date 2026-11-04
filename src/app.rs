@@ -185,22 +185,8 @@ pub struct PhotographApp {
     status: Option<Status>,
     /// A skin for this run only, not saved (`PHOTOGRAPH_SKIN`, for screenshots).
     forced_skin: Option<String>,
-    /// `PHOTOGRAPH_SCREENSHOT`: where to save a screenshot, and whether it
-    /// was requested yet.
-    screenshot: Option<(PathBuf, bool)>,
-}
-
-/// GTK-style spacing, in every skin. Applying a Patina skin replaces the
-/// whole style, so this runs after each one.
-fn configure_spacing(ctx: &egui::Context) {
-    ctx.all_styles_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        style.spacing.button_padding = egui::vec2(10.0, 5.0);
-        style.spacing.window_margin = egui::Margin::same(12);
-        style.spacing.menu_margin = egui::Margin::same(8);
-        style.spacing.indent = 20.0;
-        style.spacing.interact_size.y = 22.0;
-    });
+    /// Set in screenshot mode (`make screenshot`).
+    screenshot: Option<crate::screenshot::Screenshot>,
 }
 
 fn configure_fonts(ctx: &egui::Context) {
@@ -276,8 +262,7 @@ impl PhotographApp {
             skin_errors,
             status: None,
             forced_skin: std::env::var("PHOTOGRAPH_SKIN").ok(),
-            screenshot: std::env::var_os("PHOTOGRAPH_SCREENSHOT")
-                .map(|p| (PathBuf::from(p), false)),
+            screenshot: crate::screenshot::Screenshot::from_env(),
         };
         app.apply_skin(&cc.egui_ctx);
         app
@@ -305,7 +290,6 @@ impl PhotographApp {
         if skin.follows_desktop() {
             ctx.set_theme(self.config.theme());
         }
-        configure_spacing(ctx);
     }
 
     /// The header's menus: File, View and Skins.
@@ -491,26 +475,36 @@ impl PhotographApp {
         }
     }
 
+    /// Drives screenshot mode: open a photo in the editor with the first
+    /// few marked, wait, capture, quit.
     fn take_screenshot(&mut self, ctx: &egui::Context) {
-        let Some((path, requested)) = &mut self.screenshot else {
+        let Some(shot) = self.screenshot.as_mut() else {
             return;
         };
-        ctx.request_repaint();
-        let image = ctx.input(|i| {
-            i.raw.events.iter().find_map(|e| match e {
-                egui::Event::Screenshot { image, .. } => Some(image.clone()),
-                _ => None,
-            })
-        });
-        if let Some(image) = image {
-            match crate::screenshot::save(&image, path) {
-                Ok(()) => eprintln!("saved {}", path.display()),
-                Err(e) => eprintln!("screenshot failed: {e}"),
+        match shot.step(ctx, self.viewer.is_loading()) {
+            crate::screenshot::Step::Open => {
+                let paths: Vec<PathBuf> = self
+                    .browser
+                    .images
+                    .iter()
+                    .take(6)
+                    .map(|(p, _)| p.clone())
+                    .collect();
+                self.browser.selection.extend(paths.iter().cloned());
+                if let Some(path) = paths.get(1).or(paths.first()) {
+                    self.viewer.set_image(path.clone(), ctx);
+                    self.browser.selected = Some(path.clone());
+                    self.view_mode = ViewMode::Edit;
+                }
             }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        } else if !*requested && ctx.input(|i| i.time) > 1.0 {
-            *requested = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+            crate::screenshot::Step::Wait => {}
+            crate::screenshot::Step::Done(result) => {
+                match result {
+                    Ok(path) => eprintln!("photograph: saved screenshot to {}", path.display()),
+                    Err(e) => eprintln!("photograph: screenshot failed: {e}"),
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         }
     }
 
@@ -1384,7 +1378,7 @@ impl eframe::App for PhotographApp {
         }
 
         #[cfg(debug_assertions)]
-        {
+        if self.screenshot.is_none() {
             egui::Window::new("Debug")
                 .id(egui::Id::new("debug_window"))
                 .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -10.0])
@@ -1438,6 +1432,10 @@ impl eframe::App for PhotographApp {
     }
 
     fn on_exit(&mut self) {
+        // Screenshot mode only looks: no sidecars or config written.
+        if self.screenshot.is_some() {
+            return;
+        }
         self.viewer.save_edits();
         self.config.browse_path = Some(self.browser.current_dir.clone());
         self.config.save();

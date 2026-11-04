@@ -39,8 +39,8 @@ is the dark half of it.
   - **Photograph's look stays, as the "Photograph" skin.** It isn't a skin file: choosing it
     applies `photograph_visuals` for both themes and follows the desktop, as before. It's the
     starting skin (`skin` unset in `config.toml`). A user skin named "Photograph" replaces it.
-  - `Skin::apply` replaces the whole egui style, so Photograph's GTK-style spacing is applied
-    after every skin. The Ubuntu fonts are separate and stay.
+  - Spacing is Patina's and egui's own (Photograph's GTK-style override was dropped, so menus and
+    the folder tree match other Patina apps). The Ubuntu fonts are separate and stay.
 - **Menus:** the header's left side becomes word menus, as in other Patina apps:
   - **File:** Render…, Quit (Ctrl+Q);
   - **View:** System Title Bar, which until now could only be set in `config.toml`;
@@ -49,8 +49,9 @@ is the dark half of it.
 
   The Render button stays next to them, and the right side (Edit, GPU badge and status) is
   unchanged.
-- **Screenshot mode:** `PHOTOGRAPH_SCREENSHOT=path.png` saves the window a second after start
-  and quits. `PHOTOGRAPH_SKIN` sets that run's skin. `make screenshot` writes three into
+- **Screenshot mode:** `PHOTOGRAPH_SCREENSHOT=path.png` opens a photo in the editor with the
+  first six marked, saves the window once it has loaded and quits, leaving no sidecars or
+  config behind. The sidebar leaves out mounted drives and network shares. `PHOTOGRAPH_SKIN` sets that run's skin. `make screenshot` writes three into
   `target/`, with config and data in throwaway folders. They show the real Pictures folder, so
   they aren't committed.
 
