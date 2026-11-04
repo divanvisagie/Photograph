@@ -419,6 +419,8 @@ impl Browser {
     /// Renders the left-hand navigation sidebar: locations, the path bar,
     /// then a folder tree under the chosen location.
     pub fn show_sidebar(&mut self, ui: &mut egui::Ui) {
+        // Hovering a row must not resize it or shift its text.
+        patina::skin::steady_controls(ui);
         let mut nav_to: Option<PathBuf> = None;
         // A clicked location becomes the tree's root, even if it's inside another.
         let mut new_root: Option<(PathBuf, String)> = None;
