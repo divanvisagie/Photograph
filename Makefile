@@ -29,6 +29,12 @@ LINUX_ICON_DST := $(PKG_ROOT)/usr/share/icons/hicolor/scalable/apps/$(APP_NAME).
 
 ICON_TMP_DIR := target/icons
 
+# Where `make install` puts things: the current user's, no sudo (DESTDIR stages it).
+PREFIX ?= $(HOME)/.local
+BINDIR := $(PREFIX)/bin
+APPSDIR := $(PREFIX)/share/applications
+ICONDIR := $(PREFIX)/share/icons/hicolor
+
 RELEASE_BRANCH := master
 # The version `make release` cuts: V=x.y.z if given (it may be the current,
 # never-tagged version), else the current one bumped by BUMP (patch, minor
@@ -43,7 +49,7 @@ NOTES_FLAG := $(if $(NOTES),--notes-file "$(NOTES)")
 
 .DEFAULT_GOAL := help
 
-.PHONY: help dev test screenshot build build-linux build-deb build-unsupported install install-linux install-unsupported clean clean-deb clean-icons icons icon-runtime release release-check docs dmg build-macos install-macos
+.PHONY: help dev test screenshot build build-linux build-deb build-unsupported install install-linux install-unsupported uninstall clean clean-deb clean-icons icons icon-runtime release release-check docs dmg build-macos install-macos
 
 help: ## Show this help
 	@echo "Usage: make <target>"
@@ -69,9 +75,9 @@ screenshot: ## Save target/screenshot-*.png in Dark Orange (the default), Defaul
 	$(SCREENSHOT_ENV) PHOTOGRAPH_SCREENSHOT=target/screenshot-default.png PHOTOGRAPH_SKIN=Default cargo run --bin photograph
 	$(SCREENSHOT_ENV) PHOTOGRAPH_SCREENSHOT=target/screenshot-calendar.png PHOTOGRAPH_SKIN=Calendar cargo run --bin photograph
 
-build: build-$(PLATFORM) ## Build the .deb
+build: build-$(PLATFORM) ## Build the release package (.deb on Linux, .dmg on macOS)
 
-install: install-$(PLATFORM) ## Build and install the .deb via apt
+install: install-$(PLATFORM) ## Install Photograph and its launcher for the current user (PREFIX=~/.local; DESTDIR to stage it)
 
 icons: icon-runtime ## Regenerate the runtime icon PNG from the SVG
 
@@ -128,8 +134,24 @@ build-deb: ## Build the .deb into target/deb/
 	@echo "Built package: $(DEB_PATH)"
 	@echo "Install with: sudo apt install ./$(DEB_PATH)"
 
-install-linux: build-deb
-	sudo apt install --reinstall -y "./$(DEB_PATH)"
+# The launcher's Exec gets the absolute path, so it works even if $(BINDIR)
+# isn't on the desktop session's PATH.
+install-linux:
+	@test -f "$(LINUX_DESKTOP_SRC)" || { echo "missing launcher file: $(LINUX_DESKTOP_SRC)"; exit 1; }
+	cargo build --release --bin $(APP_NAME)
+	install -Dm755 "target/release/$(APP_NAME)" "$(DESTDIR)$(BINDIR)/$(APP_NAME)"
+	install -Dm644 "$(LINUX_ICON_SRC)" "$(DESTDIR)$(ICONDIR)/scalable/apps/$(APP_NAME).svg"
+	install -d "$(DESTDIR)$(APPSDIR)"
+	sed 's|^Exec=$(APP_NAME)|Exec=$(BINDIR)/$(APP_NAME)|' "$(LINUX_DESKTOP_SRC)" > "$(DESTDIR)$(APPSDIR)/$(APP_NAME).desktop"
+	@# Staged for another machine, its caches are its own.
+	@test -n "$(DESTDIR)" || { update-desktop-database -q "$(APPSDIR)" || true; }
+	@test -n "$(DESTDIR)" || test ! -f "$(ICONDIR)/icon-theme.cache" || gtk-update-icon-cache -q -t -f "$(ICONDIR)" || true
+	@echo "Installed $(DESTDIR)$(BINDIR)/$(APP_NAME) and its launcher"
+
+uninstall: ## Remove what make install put in place
+	rm -f "$(BINDIR)/$(APP_NAME)" "$(APPSDIR)/$(APP_NAME).desktop" "$(ICONDIR)/scalable/apps/$(APP_NAME).svg"
+	-update-desktop-database -q "$(APPSDIR)"
+	-@test ! -f "$(ICONDIR)/icon-theme.cache" || gtk-update-icon-cache -q -t -f "$(ICONDIR)"
 
 clean: ## Remove all build output (fixes cargo run running a stale build)
 	cargo clean

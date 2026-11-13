@@ -71,10 +71,10 @@ The sidebar's mounted drives and network shares are Linux-only.
 
 ### Build it yourself
 
-Or build and install the `.deb` locally via the `Makefile` (see [Packaging](#packaging)):
+Or build and install it for your user (into `~/.local`, no sudo) via the `Makefile` (see [Packaging](#packaging)):
 
 ```bash
-sudo apt install -y dpkg-dev libglib2.0-dev
+sudo apt install -y libglib2.0-dev
 make install
 ```
 
@@ -162,7 +162,8 @@ PHOTOGRAPH_DEBUG_ALLOW_CPU_FALLBACK=1 PHOTOGRAPH_PREVIEW_BACKEND=cpu cargo run -
 ## Packaging
 
 The `Makefile` builds a `.deb` on Linux. `make build` builds it (`make build-deb`); `make install`
-builds and installs it (`make install-linux`, aliased from `make install`). On macOS, `make dmg`
+instead installs the app and its launcher for the current user, like Teleprinter (`PREFIX=~/.local` by
+default, `DESTDIR` to stage it; `make uninstall` removes it). On macOS, `make dmg`
 builds a universal `Photograph.app` in a `.dmg` (`packaging/macos/`, needs
 `brew install librsvg` for the icon).
 
@@ -180,7 +181,8 @@ Common targets:
 make                # list all targets
 make build          # build the .deb
 make build-deb      # build the .deb
-make install        # build and install the .deb
+make install        # install for the current user (~/.local)
+make uninstall      # remove it
 make dmg            # build the .dmg (macOS only)
 make clean          # remove all build output
 make release        # release a new version, built by CI (see Releasing)
