@@ -17,6 +17,15 @@ use viewer::PreviewBackend;
 
 const WINDOW_ICON_PNG: &[u8] = include_bytes!("../assets/photograph-icon-128.png");
 
+/// What Photograph was asked to open, from the command line (what a file
+/// manager's Open With passes): the first argument that is a file or folder
+/// that exists, made absolute. Anything else (flags, missing paths) is ignored.
+fn start_from_args(args: impl Iterator<Item = std::ffi::OsString>) -> Option<std::path::PathBuf> {
+    args.map(std::path::PathBuf::from)
+        .find(|p| p.exists())
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+}
+
 fn build_window_icon() -> egui::IconData {
     let icon = image::load_from_memory_with_format(WINDOW_ICON_PNG, image::ImageFormat::Png)
         .expect("embedded window icon should decode as PNG")
@@ -117,6 +126,7 @@ fn main() -> eframe::Result {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    let start = start_from_args(std::env::args_os().skip(1));
     let config = AppConfig::load();
     let requested_preview_backend = resolve_preview_backend(&config);
     let allow_debug_cpu_fallback = processing::gpu_pipeline::allow_debug_cpu_fallback();
@@ -151,14 +161,22 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "photograph",
         native_options,
-        Box::new(|cc| Ok(Box::new(PhotographApp::new(cc, config, preview_backend)))),
+        Box::new(|cc| Ok(Box::new(PhotographApp::new(cc, config, preview_backend, start)))),
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{effective_preview_backend, parse_preview_backend};
+    use super::{effective_preview_backend, parse_preview_backend, start_from_args};
     use crate::viewer::PreviewBackend;
+
+    #[test]
+    fn the_start_is_the_first_argument_that_exists() {
+        let dir = std::env::temp_dir();
+        let args = ["--flag".into(), "/no/such/file.nef".into(), dir.clone().into_os_string()];
+        assert_eq!(start_from_args(args.into_iter()), std::fs::canonicalize(&dir).ok());
+        assert_eq!(start_from_args(std::iter::empty()), None);
+    }
 
     #[test]
     fn parse_preview_backend_handles_supported_values() {

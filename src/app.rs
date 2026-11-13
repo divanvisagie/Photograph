@@ -225,21 +225,42 @@ impl PhotographApp {
         cc: &eframe::CreationContext<'_>,
         config: AppConfig,
         preview_backend: PreviewBackend,
+        start: Option<PathBuf>,
     ) -> Self {
         configure_fonts(&cc.egui_ctx);
         patina::appearance::watch(&cc.egui_ctx);
         let (skins, skin_errors) = load_skins();
-        let browser = Browser::new(&cc.egui_ctx, config.browse_path.clone());
+        // Opened with a file (Open With): browse its folder and show it. A
+        // folder is just browsed.
+        let (start_dir, start_image) = match start {
+            Some(p) if p.is_dir() => (Some(p), None),
+            Some(p) if crate::thumbnail::is_supported_image(&p) => {
+                (p.parent().map(|d| d.to_path_buf()), Some(p))
+            }
+            Some(p) => (p.parent().map(|d| d.to_path_buf()), None),
+            None => (None, None),
+        };
+        let mut browser = Browser::new(
+            &cc.egui_ctx,
+            start_dir.or_else(|| config.browse_path.clone()),
+        );
         let output_dir = default_render_dir();
         let (preview_status_label, preview_status_details, preview_status_vendor) =
             preview_status_summary(preview_backend);
+        let mut viewer = Viewer::new(0, preview_backend);
+        let mut view_mode = ViewMode::Library;
+        if let Some(path) = start_image {
+            viewer.set_image(path.clone(), &cc.egui_ctx);
+            browser.selected = Some(path);
+            view_mode = ViewMode::Fullscreen;
+        }
         let app = Self {
             browser,
             preview_status_label,
             preview_status_details,
             preview_status_vendor,
-            viewer: Viewer::new(0, preview_backend),
-            view_mode: ViewMode::Library,
+            viewer,
+            view_mode,
             show_render_window: false,
             render_output_path: output_dir.display().to_string(),
             render_format: RenderFormat::Jpg,
