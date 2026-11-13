@@ -3418,14 +3418,15 @@ checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
 
 [[package]]
 name = "patina-ui"
-version = "0.1.18"
+version = "0.1.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29dfc29ed337973a211d27ae8660403a0221aadbc5727236f0a645808d11a7fc"
+checksum = "d82e1a0555e4ebc71fc7af92fdf70d244f4b65c266d40b7f2b87e694fa94113f"
 dependencies = [
  "dirs 7.0.0",
  "egui",
  "libc",
  "muda",
+ "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "raw-window-handle",
  "serde",
