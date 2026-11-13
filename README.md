@@ -69,20 +69,27 @@ xattr -dr com.apple.quarantine /Applications/Photograph.app
 
 The sidebar's mounted drives and network shares are Linux-only.
 
-### Build it yourself
+### From source (`make install`)
 
-Or build and install it for your user (into `~/.local`, no sudo) via the `Makefile` (see [Packaging](#packaging)):
+With a Rust toolchain and `libglib2.0-dev` (Linux), clone the repo and install it for your user:
 
 ```bash
+git clone https://github.com/divanvisagie/Photograph
+cd Photograph
 sudo apt install -y libglib2.0-dev
 make install
 ```
+
+On Linux this builds a release binary and puts it in `~/.local/bin`, with the launcher and icon under
+`~/.local/share`; no sudo. `PREFIX=/usr/local` (or another) installs elsewhere, and `make uninstall`
+removes it. Make sure `~/.local/bin` is on your `PATH`. On macOS `make install` builds the `.dmg`
+(see [Packaging](#packaging)).
 
 Photograph is not distributed as a Snap: strict confinement can't give a photo browser access to
 arbitrary locations like `/tank` or other custom mounts (see
 [ADR-0016](docs/adr/0016-drop-snap-packaging.md)).
 
-### From Source
+### Run from source
 
 ```bash
 cargo run --bin photograph
