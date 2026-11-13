@@ -3,16 +3,13 @@
 A native Rust (egui) photo browser and editor, built on Patina (`patina-ui`). Read `README.md`
 first, then `docs/adr/` for why things are as they are.
 
-This is an open source project that lives on GitHub. It is not one of the Sector F Labs projects,
-and the rules in `~/Src/com/sectorflabs/AGENTS.md` do not apply here.
+This is an open source project that lives on GitHub, so everything in this repo, this file
+included, is public. Keep private infrastructure (hostnames, internal remotes, machine names) out of it.
 
 ## Remotes
 
-- `origin` is GitHub (`divanvisagie/Photograph`). Development, releases and CI all happen there,
-  and the Makefile's `release` target assumes it.
-- `urd` is a private copy on urd. Push to it by hand when you want it current; nothing depends on it.
-
-This differs from the Sector F repos, where `origin` is urd and `github` is GitHub's.
+`origin` is GitHub (`divanvisagie/Photograph`). Development, releases and CI all happen there, and
+the Makefile's `release` target assumes it.
 
 ## Patina
 
@@ -41,5 +38,4 @@ bump here.
 - A macOS menu bar, window buttons and the `.app` name come from Patina and the bundle's
   `packaging/macos/Info.plist`. A bare `cargo run` binary shows its file name (`photograph`) in the
   menu bar; the packaged app shows `Photograph`.
-- To try a change on macOS, rsync the tree to `m3.local` (same `~/Src` layout, excluding `target`
-  and `.git`) and build there.
+- To try a change on macOS, copy the tree to a Mac (excluding `target` and `.git`) and build there.
