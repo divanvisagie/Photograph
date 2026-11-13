@@ -40,7 +40,7 @@ jobs:
 
   dmg:
     name: macOS .dmg
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
