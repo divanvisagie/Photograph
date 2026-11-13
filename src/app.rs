@@ -228,6 +228,8 @@ impl PhotographApp {
         start: Option<PathBuf>,
     ) -> Self {
         configure_fonts(&cc.egui_ctx);
+        #[cfg(target_os = "macos")]
+        crate::macos_open::set_window(&cc.egui_ctx);
         patina::appearance::watch(&cc.egui_ctx);
         let (skins, skin_errors) = load_skins();
         // Opened with a file (Open With): browse its folder and show it. A
@@ -1063,6 +1065,17 @@ impl eframe::App for PhotographApp {
         if let Some(rect) = viewport_rect {
             self.config.window_width = Some(rect.width());
             self.config.window_height = Some(rect.height());
+        }
+
+        // Files Finder's Open With sent while running (or at launch).
+        #[cfg(target_os = "macos")]
+        if let Some(path) = crate::macos_open::take().pop() {
+            self.browser.show_path(path.clone());
+            if crate::thumbnail::is_supported_image(&path) {
+                self.viewer.set_image(path.clone(), ctx);
+                self.browser.selected = Some(path);
+                self.view_mode = ViewMode::Fullscreen;
+            }
         }
 
         // Poll background work before rendering panels

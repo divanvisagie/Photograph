@@ -204,6 +204,18 @@ impl Browser {
         self.network_locations = network;
     }
 
+    /// Shows a folder, or a photo's folder with the photo focused (a file
+    /// opened from outside, while the app is running).
+    #[cfg(target_os = "macos")]
+    pub fn show_path(&mut self, path: PathBuf) {
+        if path.is_dir() {
+            self.navigate(path);
+        } else if let Some(parent) = path.parent() {
+            self.navigate(parent.to_path_buf());
+            self.pending_select = Some(path);
+        }
+    }
+
     fn navigate(&mut self, dir: PathBuf) {
         self.pending_nav = Some(dir);
     }

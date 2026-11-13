@@ -41,5 +41,10 @@ pollster = "1.0"
 gio = "0.22"
 async-channel = "2"
 
+# Open With on macOS arrives as a delegate message, not as a command-line argument.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray"] }
+
 [profile.release]
 opt-level = 3

@@ -3,6 +3,8 @@ mod browser;
 mod config;
 mod editor;
 mod locations;
+#[cfg(target_os = "macos")]
+mod macos_open;
 mod metadata;
 mod network;
 mod processing;
@@ -126,6 +128,8 @@ fn main() -> eframe::Result {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    #[cfg(target_os = "macos")]
+    macos_open::install();
     let start = start_from_args(std::env::args_os().skip(1));
     let config = AppConfig::load();
     let requested_preview_backend = resolve_preview_backend(&config);
