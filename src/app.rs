@@ -361,6 +361,7 @@ impl PhotographApp {
         skins.push(Entry::item("Open skins folder", Action::OpenSkinsFolder));
 
         Menus::new()
+            .app_name("Photograph")
             .menu(
                 "File",
                 [
