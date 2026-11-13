@@ -99,6 +99,24 @@ sudo apt install ./photograph_0.5.0-1_amd64.deb</code></pre>
 <pre><code>cargo install photograph
 photograph</code></pre>
 
+      <h3>From source</h3>
+
+      <p>
+        With a Rust toolchain and <code>libglib2.0-dev</code> (Linux), clone the repo and install it
+        for your user:
+      </p>
+<pre><code>git clone https://github.com/divanvisagie/Photograph
+cd Photograph
+sudo apt install -y libglib2.0-dev
+make install</code></pre>
+      <p>
+        On Linux this builds a release binary and puts it in <code>~/.local/bin</code>, with the
+        launcher and icon under <code>~/.local/share</code>; no sudo. <code>PREFIX=/usr/local</code>
+        (or another) installs elsewhere, and <code>make uninstall</code> removes it. Make sure
+        <code>~/.local/bin</code> is on your <code>PATH</code>. On macOS <code>make install</code>
+        builds the <code>.dmg</code>.
+      </p>
+
 
 
       <h2>What It Does</h2>
@@ -138,12 +156,13 @@ make dev</code></pre>
       <h2>Packaging</h2>
 
       <p>
-        The <code>Makefile</code> builds a Linux <code>.deb</code>.
+        The <code>Makefile</code> builds a Linux <code>.deb</code> and installs the app for the current user.
       </p>
 
 <pre><code>make                # list all targets
 make build          # build the .deb
-make install        # build and install the .deb</code></pre>
+make install        # install for the current user (~/.local)
+make uninstall      # remove it</code></pre>
 
       <h2>Architecture</h2>
 
