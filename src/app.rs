@@ -14,6 +14,7 @@ use image::codecs::png::{
 use image::codecs::webp::WebPEncoder;
 use image::imageops::FilterType;
 use patina::frame::{self, TitleBar};
+use patina::menu::{Entry, Menus, Role};
 use patina::skin::{self, Skin};
 use rayon::prelude::*;
 
@@ -29,6 +30,7 @@ const TOOLS_WIDTH: f32 = 340.0;
 const FILMSTRIP_HEIGHT: f32 = 100.0;
 
 /// Things the header's menus ask for, handled after the header is drawn.
+#[derive(Clone)]
 enum Action {
     Render,
     Quit,
@@ -315,90 +317,72 @@ impl PhotographApp {
         }
     }
 
-    /// The header's menus: File, View and Skins.
-    fn menus(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        ui.menu_button("File", |ui| {
-            if ui.button("Render…").clicked() {
-                actions.push(Action::Render);
-                ui.close();
-            }
-            ui.separator();
-            if ui
-                .add(egui::Button::new("Quit").shortcut_text("Ctrl+Q"))
-                .clicked()
-            {
-                actions.push(Action::Quit);
-                ui.close();
-            }
-        });
-        ui.menu_button("View", |ui| {
-            let mut system = self.config.system_title_bar;
-            if ui.checkbox(&mut system, "System Title Bar").changed() {
-                actions.push(Action::SystemTitleBar(system));
-            }
-        });
-        // Patina's skin menu (its ADR-0017): only controls; what they did
-        // goes to the status bar.
-        ui.menu_button("Skins", |ui| {
-            // Size the menu to its widest entry instead of wrapping entries
-            // to its first width.
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-            let current = self.skin();
-            for skin in &self.skins {
+    /// The header's menus: File, View and Skins, as data Patina draws in the window or, on
+    /// macOS, in the menu bar (Patina's ADR-0036). It owns the shortcuts too.
+    fn menus(&self) -> Menus<Action> {
+        let current = self.skin();
+        let mut skins: Vec<Entry<Action>> = self
+            .skins
+            .iter()
+            .map(|skin| {
                 let label = match &skin.author {
                     Some(author) if skin.path.is_some() => {
                         format!("{} — {author}", skin.name)
                     }
                     _ => skin.name.clone(),
                 };
-                let resp = ui.radio(skin.name == current.name, label);
-                let resp = match &skin.path {
-                    Some(path) => resp.on_hover_text(path.display().to_string()),
-                    None => resp,
-                };
-                if resp.clicked() {
-                    actions.push(Action::SetSkin(skin.name.clone()));
-                }
-            }
-            ui.separator();
-            ui.add_enabled_ui(current.follows_desktop(), |ui| {
-                for (value, label) in [
-                    ("system", "Follow desktop"),
-                    ("light", "Light"),
-                    ("dark", "Dark"),
-                ] {
-                    // An unset or unknown setting follows the desktop.
-                    let on = match value {
-                        "system" => {
-                            !matches!(self.config.light_dark.as_str(), "light" | "dark")
-                        }
-                        _ => self.config.light_dark == value,
-                    };
-                    if ui.radio(on, label).clicked() {
-                        actions.push(Action::SetLightDark(value.into()));
-                    }
-                }
-            });
-            ui.separator();
-            if ui.button("Reload skins").clicked() {
-                actions.push(Action::ReloadSkins);
-            }
-            if ui
-                .button("Copy built-in skins to folder")
-                .on_hover_text(
-                    "Puts editable copies in the skins folder; never overwrites existing files",
+                Entry::item(label, Action::SetSkin(skin.name.clone()))
+                    .radio(skin.name == current.name)
+            })
+            .collect();
+        skins.push(Entry::separator());
+        for (value, label) in [
+            ("system", "Follow desktop"),
+            ("light", "Light"),
+            ("dark", "Dark"),
+        ] {
+            // An unset or unknown setting follows the desktop.
+            let on = match value {
+                "system" => !matches!(self.config.light_dark.as_str(), "light" | "dark"),
+                _ => self.config.light_dark == value,
+            };
+            skins.push(
+                Entry::item(label, Action::SetLightDark(value.into()))
+                    .radio(on)
+                    .enabled(current.follows_desktop()),
+            );
+        }
+        skins.push(Entry::separator());
+        skins.push(Entry::item("Reload skins", Action::ReloadSkins));
+        skins.push(Entry::item(
+            "Copy built-in skins to folder",
+            Action::CopySkins,
+        ));
+        skins.push(Entry::item("Open skins folder", Action::OpenSkinsFolder));
+
+        Menus::new()
+            .menu(
+                "File",
+                [
+                    Entry::item("Render…", Action::Render),
+                    Entry::separator(),
+                    Entry::item("Quit", Action::Quit)
+                        .shortcut(egui::KeyboardShortcut::new(
+                            egui::Modifiers::COMMAND,
+                            egui::Key::Q,
+                        ))
+                        .role(Role::Quit),
+                ],
+            )
+            .menu(
+                "View",
+                [Entry::item(
+                    "System Title Bar",
+                    Action::SystemTitleBar(!self.config.system_title_bar),
                 )
-                .clicked()
-            {
-                actions.push(Action::CopySkins);
-            }
-            let folder = skin::app_dir("photograph")
-                .map(|d| d.display().to_string())
-                .unwrap_or_default();
-            if ui.button("Open skins folder").on_hover_text(folder).clicked() {
-                actions.push(Action::OpenSkinsFolder);
-            }
-        });
+                .check(self.config.system_title_bar)],
+            )
+            .menu("Skins", skins)
     }
 
     /// The latest message, coloured by its level. Skins that failed to load
@@ -1105,14 +1089,6 @@ impl eframe::App for PhotographApp {
         }
 
         self.follow_theme(ctx);
-        if ctx.input_mut(|i| {
-            i.consume_shortcut(&egui::KeyboardShortcut::new(
-                egui::Modifiers::COMMAND,
-                egui::Key::Q,
-            ))
-        }) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
         let custom_frame = !self.config.system_title_bar;
         // The window draws its own frame, so the compositor is asked for its drop shadow (once).
         if custom_frame {
@@ -1141,7 +1117,10 @@ impl eframe::App for PhotographApp {
                     .span(frame::header_span(ui))
                     .show(
                         ui,
-                        |ui| self.menus(ui, &mut actions),
+                        |ui| {
+                            // In the menu bar on macOS, and nothing is drawn here.
+                            actions.extend(self.menus().show(ui));
+                        },
                         |ui| {
                             render_clicked = ui.button("Render").clicked();
                             // The photo views have their own Edit button (`show_photo_header`).
