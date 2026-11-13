@@ -1033,7 +1033,7 @@ impl PhotographApp {
 }
 
 impl eframe::App for PhotographApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, eframe_frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
         let viewport_rect = ctx.input(|i| i.viewport().inner_rect);
@@ -1080,6 +1080,10 @@ impl eframe::App for PhotographApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         let custom_frame = !self.config.system_title_bar;
+        // The window draws its own frame, so the compositor is asked for its drop shadow (once).
+        if custom_frame {
+            frame::shadow::request(eframe_frame);
+        }
         let style = self.skin().frame_style(ui.visuals());
         let radius = if custom_frame {
             frame::corner_radius(ctx, style.radius)
